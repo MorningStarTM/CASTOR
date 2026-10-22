@@ -1,0 +1,29 @@
+# Pretraining corpus for the language arms.
+#
+# FineWeb-Edu carries the general ability. The SlimPajama slice is filtered to
+# ArXiv and StackExchange only, which is what gives the model any exposure to
+# technical register before Phase 2 adapts it on grid codes and blackout
+# reports. LoRA on a small corpus adapts a register the model already has; it
+# cannot install one that was never there.
+target_tokens: 6_000_000_000
+holdout_tokens: 10_000_000
+seed: 1337
+
+sources:
+  - name: fineweb_edu
+    hf_path: HuggingFaceFW/fineweb-edu
+    hf_name: sample-10BT
+    split: train
+    text_column: text
+    weight: 0.85
+
+  - name: slimpajama_technical
+    hf_path: DKYoon/SlimPajama-6B
+    split: train
+    text_column: text
+    weight: 0.15
+    filter:
+      field: meta.redpajama_set_name
+      keep:
+        - RedPajamaArXiv
+        - RedPajamaStackExchange

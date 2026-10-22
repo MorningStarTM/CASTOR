@@ -1,0 +1,27 @@
+# Local debugging arm. Not a result: this exists to prove the pipeline runs
+# end to end on a 4GB laptop card before an arm is sent to a real GPU.
+#
+# block_size is 256 rather than 1024 because gpt.py's attention materialises a
+# (batch, heads, T, T) score matrix per layer and keeps it for the backward
+# pass. At T=1024 that alone is hundreds of MB per sequence.
+defaults: [pretrain_50m.yaml]
+arm: smoke
+
+model:
+  block_size: 256
+  n_layer: 4
+  n_head: 4
+  n_emb: 256
+
+optim:
+  warmup_steps: 20
+
+target_tokens: 2_000_000
+batch_size: 2
+grad_accum_steps: 8
+compile_model: false
+
+eval_interval: 50
+eval_batches: 10
+checkpoint_interval: 100
+log_interval: 10

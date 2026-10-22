@@ -1,0 +1,19 @@
+# Pretrained tokenizer for every language arm.
+#
+# 32k byte-fallback BPE, Apache 2.0. Chosen for three properties, in the order
+# they matter to CASTOR: per-digit tokenization (element ids and rho values),
+# a vocabulary small enough that embeddings do not dominate a 50M model, and
+# byte fallback so no glyph in a grid code becomes an UNK.
+name: mistralai/Mistral-7B-v0.1
+vocab_size: 32000
+
+# Tried in order if the primary cannot be fetched unattended.
+fallbacks:
+  - mistral-community/Mistral-7B-v0.1
+  - NousResearch/Llama-2-7b-hf
+
+# Run before tokenizing the corpus. Phase 3 grounding depends on element names
+# surviving tokenization as compact, consistent units.
+audit:
+  max_tokens_per_name: 4
+  require_atomic_digits: true

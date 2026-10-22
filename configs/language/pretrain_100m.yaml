@@ -1,0 +1,16 @@
+# 100M arm. 96.1M parameters: 70.8M non-embedding, 24.6M embedding.
+# n_layer is 10 rather than 12 to stay under the 100M ceiling.
+defaults: [pretrain_50m.yaml]
+arm: 100m
+
+model:
+  n_layer: 10
+  n_head: 12
+  n_emb: 768
+
+optim:
+  learning_rate: 4.0e-4   # lower peak for the wider model
+
+target_tokens: 5_000_000_000
+batch_size: 12
+grad_accum_steps: 16
