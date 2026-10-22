@@ -1,0 +1,17 @@
+# Two entire environments, never trained on, used only for transfer claims.
+# Every exit test reads this file. Nothing else may.
+#
+# TODO(phase0): fix the two names before generating a single transition.
+# Changing this list after Phase 0 invalidates every transfer number.
+environments:
+  - name: TBD_heldout_a
+    buses: null
+    role: transfer claim, exit tests for phases 1, 3, 4, 5
+  - name: TBD_heldout_b
+    buses: null
+    role: transfer claim, exit tests for phases 1, 3, 4, 5
+
+guard:
+  # castor.eval refuses to build these outside evaluation, and
+  # castor.data refuses to generate from them at all.
+  training_forbidden: true

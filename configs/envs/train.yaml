@@ -1,0 +1,18 @@
+# Environments CASTOR is allowed to train on.
+backend: lightsim2grid
+opponent:
+  enabled: true          # not a default; without it the corpus is too benign
+chronics:
+  start_near_congestion: true
+  congestion_rho_threshold: 0.90
+
+environments:
+  - name: l2rpn_case14_sandbox
+    buses: 14
+    source: grid2op builtin
+  - name: l2rpn_wcci_2020
+    buses: 36
+    source: WCCI 2020
+  - name: l2rpn_wcci_2022
+    buses: 118
+    source: WCCI 2022

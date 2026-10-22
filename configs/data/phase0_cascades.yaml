@@ -1,0 +1,8 @@
+# Dataset 2: cascade logs. Raw material for Phase 5.
+output: data/cascades
+trigger: blackout            # log every terminal cascade
+records:
+  - ordered_trip_chain
+  - rho_at_each_trip
+  - trip_timings
+  - preceding_state_history

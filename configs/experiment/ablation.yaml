@@ -1,0 +1,12 @@
+# The ablation that runs through every phase.
+#
+# Same encoder, same data, same budget. Only the language-side
+# initialisation differs. Reported at phase 4 and again at phase 7.
+sizes: [50M, 100M, 300M]
+arms:
+  - name: language_init
+    init: pretrained_checkpoint
+  - name: random_init
+    init: random
+report_at: [phase4, phase7]
+eval_on: heldout_only

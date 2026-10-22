@@ -1,0 +1,16 @@
+# Dataset 1: transitions.
+output: data/transitions
+parallelism:
+  workers: auto            # one grid2op process per core
+records:
+  - state
+  - structured_action
+  - next_state
+  - rho_vector
+  - overflow_timers
+  - trip_events
+tracking:
+  # The top risk is millions of transitions with almost none near a cascade.
+  # This fraction is reported on every run, from day one.
+  report_near_congestion_fraction: true
+  near_congestion_rho: 0.90

@@ -1,0 +1,15 @@
+# Dataset 3: oracle actions. Expensive. Starts first, runs for months.
+output: data/oracle
+method: brute_force_obs_simulate
+action_set: reduced          # reduced bus configuration set, not full
+records:
+  - state
+  - best_bus_configuration
+  - simulated_rho_per_candidate
+checkpointing:
+  resumable: true            # it will be interrupted; it must not restart
+  shard_size: 10000
+fallback:
+  # If labelling is still behind when Phase 7 arrives.
+  strategy: greedy_simulate_labels
+  action_set: reduced

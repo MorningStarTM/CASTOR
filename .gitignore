@@ -218,3 +218,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# CASTOR: generated corpora and run artefacts
+data/**
+!data/**/.gitkeep
+experiments/**
+!experiments/**/.gitkeep
+
+# CASTOR: local working material, kept out of the repo
+docs/
+papers/
+notebooks/

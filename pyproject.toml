@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "castor"
+version = "0.0.0"
+description = "CAScade aware TOpology Reasoning: a grid2op foundation model"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = [
+  "grid2op",
+  "lightsim2grid",
+  "numpy",
+  "torch",
+  "pyyaml",
+]
+
+[project.optional-dependencies]
+train = ["transformers", "peft", "accelerate"]
+dev = ["pytest", "ruff"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests", "scripts"]
