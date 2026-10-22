@@ -35,6 +35,9 @@ def main() -> int:
     parser.add_argument("--cache-dir", default=None)
     parser.add_argument("--audit-only", action="store_true")
     parser.add_argument(
+        "--target-tokens", type=int, default=None, help="override the mix's token target"
+    )
+    parser.add_argument(
         "--force", action="store_true", help="pack even if the tokenizer audit fails"
     )
     args = parser.parse_args()
@@ -58,6 +61,8 @@ def main() -> int:
         return 0
 
     mix = MixConfig.from_yaml(args.mix)
+    if args.target_tokens:
+        mix.target_tokens = args.target_tokens
 
     print(f"\npacking validation split ({mix.holdout_tokens:,} tokens)")
     val_meta = pack(mix, tokenizer, args.out, "val", target_tokens=mix.holdout_tokens)

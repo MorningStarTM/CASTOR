@@ -87,8 +87,10 @@ def configure_optimizer(
         {"params": decay, "weight_decay": weight_decay},
         {"params": no_decay, "weight_decay": 0.0},
     ]
-    fused = torch.cuda.is_available()
+    # Decide from where the parameters actually live, not from cuda availability:
+    # fused AdamW rejects CPU tensors, and a model can sit on CPU on a CUDA box.
+    fused = bool(decay) and all(p.is_cuda for p in decay + no_decay)
     try:
         return torch.optim.AdamW(groups, lr=learning_rate, betas=betas, fused=fused)
-    except TypeError:  # torch too old for fused AdamW
+    except (TypeError, RuntimeError):  # torch too old for fused, or refused it
         return torch.optim.AdamW(groups, lr=learning_rate, betas=betas)
