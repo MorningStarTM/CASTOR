@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from castor.language.corpus import MixConfig, pack  # noqa: E402
 from castor.language.tokenizer import (  # noqa: E402
+    DEFAULT_MAX_TOKENS_PER_NAME,
     audit_tokenizer,
     load_tokenizer,
     load_tokenizer_config,
@@ -45,12 +46,12 @@ def main() -> int:
     tok_cfg = load_tokenizer_config(args.tokenizer)
     tokenizer = load_tokenizer(tok_cfg.get("name"), cache_dir=args.cache_dir)
 
-    audit = audit_tokenizer(tokenizer)
-    limit = tok_cfg.get("audit", {}).get("max_tokens_per_name", 4)
+    limit = tok_cfg.get("audit", {}).get("max_tokens_per_name", DEFAULT_MAX_TOKENS_PER_NAME)
+    audit = audit_tokenizer(tokenizer, max_tokens_per_name=limit)
     print(f"tokenizer: {tokenizer.name_or_path}")
     print(audit.report())
 
-    if not audit.ok(limit) and not args.force:
+    if not audit.ok() and not args.force:
         print(
             "\nAudit failed. Element names or digits tokenize badly, which will cost "
             "you in Phase 3 grounding. Pick another tokenizer or pass --force.",

@@ -21,11 +21,13 @@ tokenizing 6B tokens, not after.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+DEFAULT_MAX_TOKENS_PER_NAME = 6
 
 # Repositories carrying an equivalent 32k sentencepiece BPE, in fallback order.
 # Used when the primary requires accepting terms the run cannot accept
@@ -47,26 +49,31 @@ class TokenizerAudit:
     digits_are_atomic: bool
     stable_width: bool
     vocab_size: int
-    phrases: dict[str, int] = None  # reported for context, never gated
+    # The threshold is carried on the result, not passed to ok() and report()
+    # separately. When they each took their own argument a caller could pass
+    # one of them a stale value, and the printed verdict would disagree with
+    # the gate that actually decided. There is now one number.
+    max_tokens_per_name: int = DEFAULT_MAX_TOKENS_PER_NAME
+    phrases: dict[str, int] = field(default_factory=dict)
 
-    def ok(self, max_tokens_per_name: int = 6) -> bool:
+    def ok(self) -> bool:
         return (
             self.digits_are_atomic
             and self.stable_width
-            and self.worst_token_count <= max_tokens_per_name
+            and self.worst_token_count <= self.max_tokens_per_name
         )
 
-    def report(self, max_tokens_per_name: int = 6) -> str:
-        verdict = "PASS" if self.ok(max_tokens_per_name) else "FAIL"
+    def report(self) -> str:
+        verdict = "PASS" if self.ok() else "FAIL"
         lines = [
             f"[{verdict}] vocab={self.vocab_size} "
             f"digits_atomic={self.digits_are_atomic} "
             f"stable_width={self.stable_width} "
             f"mean_tokens_per_name={self.mean_token_count:.2f} "
             f"worst={self.worst_name!r} at {self.worst_token_count} "
-            f"(limit {max_tokens_per_name})"
+            f"(limit {self.max_tokens_per_name})"
         ]
-        for phrase, count in (self.phrases or {}).items():
+        for phrase, count in self.phrases.items():
             lines.append(f"    {phrase!r}: {count} tokens")
         return "\n".join(lines)
 
@@ -138,7 +145,11 @@ def _width_is_stable(tok) -> bool:
     return True
 
 
-def audit_tokenizer(tok, names: list[str] | None = None) -> TokenizerAudit:
+def audit_tokenizer(
+    tok,
+    max_tokens_per_name: int = DEFAULT_MAX_TOKENS_PER_NAME,
+    names: list[str] | None = None,
+) -> TokenizerAudit:
     """Measure what the tokenizer does to grid element names and rho values."""
     names = names or _grid_name_samples()
 
@@ -152,6 +163,7 @@ def audit_tokenizer(tok, names: list[str] | None = None) -> TokenizerAudit:
         digits_are_atomic=_digits_are_atomic(tok),
         stable_width=_width_is_stable(tok),
         vocab_size=len(tok),
+        max_tokens_per_name=max_tokens_per_name,
         phrases={p: _count(tok, p) for p in _phrase_samples()},
     )
 

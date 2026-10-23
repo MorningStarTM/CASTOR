@@ -14,6 +14,10 @@ fallbacks:
 
 # Run before tokenizing the corpus. Phase 3 grounding depends on element names
 # surviving tokenization as compact, consistent units.
+# Single element names only. A phrase naming two elements is longer because it
+# says more; phrases are reported but never gated. The ceiling is 6 because the
+# 118-bus grid produces three-digit ids, and 'line_118' is a legitimate
+# 5 tokens: the word, the underscore, and one token per digit.
 audit:
-  max_tokens_per_name: 4
+  max_tokens_per_name: 6
   require_atomic_digits: true
