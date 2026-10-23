@@ -65,15 +65,19 @@ def main() -> int:
     if args.target_tokens:
         mix.target_tokens = args.target_tokens
 
-    print(f"\npacking validation split ({mix.holdout_tokens:,} tokens)")
-    val_meta = pack(mix, tokenizer, args.out, "val", target_tokens=mix.holdout_tokens)
-    print(f"  wrote {val_meta['tokens']:,} tokens in {len(val_meta['shards'])} shard(s)")
-
-    print(f"\npacking train split ({mix.target_tokens:,} tokens)")
-    train_meta = pack(mix, tokenizer, args.out, "train")
-    print(f"  wrote {train_meta['tokens']:,} tokens in {len(train_meta['shards'])} shard(s)")
-    if not train_meta["complete"]:
+    print(f"\npacking {mix.target_tokens:,} train tokens (val fills in the same pass)")
+    meta = pack(mix, tokenizer, args.out)
+    for split in ("train", "val"):
+        m = meta[split]
+        print(
+            f"  {split}: {m['tokens']:,} tokens in {len(m['shards'])} shard(s) "
+            f"-> {Path(args.out) / split}"
+        )
+    if not meta["train"]["complete"]:
         print("  WARNING: sources exhausted before the token target was met")
+    if meta["val"]["tokens"] == 0:
+        print("  WARNING: validation split is empty", file=sys.stderr)
+        return 1
     return 0
 
 

@@ -28,6 +28,62 @@ import yaml
 SHARD_TOKENS = 100_000_000  # 200 MB per shard at uint16
 
 
+class _ShardWriter:
+    """Append token ids to a rolling series of flat uint16 shards.
+
+    Tokens go to disk as they arrive rather than accumulating in a list. A
+    Python list of 100M ids costs roughly 3.6GB, because ids above 256 are not
+    interned and each is a separate object behind a pointer, and flushing one
+    means an O(n) slice and an element-by-element conversion to numpy. Writing
+    through keeps memory at the size of one batch.
+    """
+
+    def __init__(self, out_dir: Path, shard_tokens: int = SHARD_TOKENS) -> None:
+        self.dir = out_dir
+        self.shard_tokens = shard_tokens
+        self.shards: list[dict[str, Any]] = []
+        self._handle = None
+        self._count = 0
+        self._total = 0
+
+    @property
+    def total(self) -> int:
+        return self._total
+
+    def _open(self) -> None:
+        path = self.dir / f"shard_{len(self.shards):04d}.bin"
+        self._handle = open(path, "wb")
+        self._current = path
+        self._count = 0
+
+    def write(self, ids: np.ndarray) -> None:
+        view = ids
+        while len(view):
+            if self._handle is None:  # first write, or the previous shard rolled
+                self._open()
+            room = self.shard_tokens - self._count
+            chunk, view = view[:room], view[room:]
+            self._handle.write(chunk.tobytes())
+            self._count += len(chunk)
+            self._total += len(chunk)
+            if self._count >= self.shard_tokens:
+                self._roll()
+
+    def _roll(self) -> None:
+        self._handle.close()
+        self.shards.append({"file": self._current.name, "tokens": self._count})
+        self._handle = None
+
+    def close(self) -> None:
+        if self._handle is not None:
+            if self._count:
+                self._roll()
+            else:  # opened but never written to
+                self._handle.close()
+                self._current.unlink(missing_ok=True)
+                self._handle = None
+
+
 @dataclass
 class Source:
     """One dataset in the mixture."""
@@ -68,7 +124,7 @@ class MixConfig:
 
 
 HOLDOUT_BUCKETS = 10_000
-HOLDOUT_SHARE = 20  # 20/10000 = 0.2% of documents are never used for training
+HOLDOUT_SHARE = 50  # 50/10000 = 0.5%, so a 1B token train split yields ~5M for val
 
 
 def is_holdout(text: str) -> bool:
@@ -121,71 +177,88 @@ def pack(
     cfg: MixConfig,
     tokenizer,
     out_dir: str | Path,
-    split: str = "train",
     target_tokens: int | None = None,
-) -> dict[str, Any]:
-    """Tokenize the mixture into flat uint16 shards. Returns the written meta."""
+    batch_documents: int = 1000,
+    progress_every: int = 50_000_000,
+) -> dict[str, dict[str, Any]]:
+    """Tokenize the mixture into flat uint16 shards. Returns meta per split.
+
+    Both splits are written in a single pass over the stream, each document
+    routed by its content hash. Packing them separately would mean streaming
+    the whole corpus twice, and worse: the validation share is a small
+    fraction of documents, so filling a 10M token validation split on its own
+    would require streaming several times the training budget to find enough
+    held-out documents. One pass fills both, and validation ends up at roughly
+    HOLDOUT_SHARE/HOLDOUT_BUCKETS of the training size.
+    """
     vocab = len(tokenizer)
     if vocab >= 2**16:
         raise ValueError(f"vocab {vocab} does not fit uint16; widen the shard dtype")
 
-    out_dir = Path(out_dir) / split
-    out_dir.mkdir(parents=True, exist_ok=True)
+    root = Path(out_dir)
     budget = target_tokens if target_tokens is not None else cfg.target_tokens
     eos = tokenizer.eos_token_id
 
-    buffer: list[int] = []
-    written = 0
-    shard_index = 0
-    shards: list[dict[str, Any]] = []
+    writers: dict[str, _ShardWriter] = {}
+    for split in ("train", "val"):
+        (root / split).mkdir(parents=True, exist_ok=True)
+        writers[split] = _ShardWriter(root / split)
 
-    def flush(final: bool = False) -> None:
-        nonlocal buffer, shard_index
-        while len(buffer) >= SHARD_TOKENS or (final and buffer):
-            take = buffer[:SHARD_TOKENS]
-            buffer = buffer[SHARD_TOKENS:]
-            path = out_dir / f"shard_{shard_index:04d}.bin"
-            np.asarray(take, dtype=np.uint16).tofile(path)
-            shards.append({"file": path.name, "tokens": len(take)})
-            shard_index += 1
+    def encode(documents: list[str]) -> np.ndarray:
+        """Tokenize a batch and flatten it, one EOS after each document."""
+        encoded = tokenizer(documents, add_special_tokens=False)["input_ids"]
+        flat: list[np.ndarray] = []
+        for ids in encoded:
+            flat.append(np.asarray(ids, dtype=np.uint16))
+            flat.append(np.asarray([eos], dtype=np.uint16))
+        return np.concatenate(flat) if flat else np.empty(0, dtype=np.uint16)
 
-    want_holdout = split == "val"
-    batch: list[str] = []
+    batches: dict[str, list[str]] = {"train": [], "val": []}
+    next_report = progress_every
+
     for document in stream_mixture(cfg):
-        if is_holdout(document) != want_holdout:
-            continue
+        split = "val" if is_holdout(document) else "train"
+        batch = batches[split]
         batch.append(document)
-        if len(batch) < 1000:
+        if len(batch) < batch_documents:
             continue
-        for ids in tokenizer(batch, add_special_tokens=False)["input_ids"]:
-            buffer.extend(ids)
-            buffer.append(eos)
-        batch = []
-        flush()
-        written = sum(s["tokens"] for s in shards) + len(buffer)
-        if written >= budget:
+        writers[split].write(encode(batch))
+        batches[split] = []
+
+        if writers["train"].total >= next_report:
+            print(
+                f"  {writers['train'].total / 1e6:.0f}M train tokens, "
+                f"{writers['val'].total / 1e6:.1f}M val",
+                flush=True,
+            )
+            next_report += progress_every
+        if writers["train"].total >= budget:
             break
 
-    if batch and written < budget:
-        for ids in tokenizer(batch, add_special_tokens=False)["input_ids"]:
-            buffer.extend(ids)
-            buffer.append(eos)
-    flush(final=True)
+    for split, batch in batches.items():
+        if batch:
+            writers[split].write(encode(batch))
 
-    total = sum(s["tokens"] for s in shards)
-    meta = {
-        "split": split,
-        "tokens": total,
-        "target_tokens": budget,
-        "complete": total >= budget,
-        "vocab_size": vocab,
-        "dtype": "uint16",
-        "eos_token_id": eos,
-        "tokenizer": tokenizer.name_or_path,
-        "shards": shards,
-        "sources": [
-            {"name": s.name, "hf_path": s.hf_path, "weight": s.weight} for s in cfg.sources
-        ],
-    }
-    (out_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    meta: dict[str, dict[str, Any]] = {}
+    for split, writer in writers.items():
+        writer.close()
+        split_meta = {
+            "split": split,
+            "tokens": writer.total,
+            "target_tokens": budget if split == "train" else None,
+            "complete": writer.total >= budget if split == "train" else writer.total > 0,
+            "vocab_size": vocab,
+            "dtype": "uint16",
+            "eos_token_id": eos,
+            "tokenizer": tokenizer.name_or_path,
+            "holdout_share": f"{HOLDOUT_SHARE}/{HOLDOUT_BUCKETS}",
+            "shards": writer.shards,
+            "sources": [
+                {"name": s.name, "hf_path": s.hf_path, "weight": s.weight} for s in cfg.sources
+            ],
+        }
+        (root / split / "meta.json").write_text(
+            json.dumps(split_meta, indent=2), encoding="utf-8"
+        )
+        meta[split] = split_meta
     return meta
