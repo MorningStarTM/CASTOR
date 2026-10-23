@@ -176,6 +176,84 @@ def read_metadata(path: str | Path) -> dict[str, str]:
         return handle.metadata() or {}
 
 
+def describe_for_hub(state: dict[str, Any]) -> dict[str, Any]:
+    """A config.json making the checkpoint self-describing.
+
+    gpt.py is a custom architecture, so nothing on the Hub can infer its shape.
+    Without this a downloaded checkpoint is a bag of tensors whose layer count
+    and width have to be guessed.
+    """
+    model = state.get("config", {}).get("model", {})
+    metrics = state.get("final_metrics") or state.get("metrics") or {}
+    return {
+        "model_type": "castor-gpt",
+        "architecture": "GPTLanguageModel (castor.language.gpt)",
+        **model,
+        "tokenizer": "mistralai/Mistral-7B-v0.1",
+        "step": state.get("step"),
+        "tokens_seen": state.get("tokens_seen"),
+        "val_loss": metrics.get("loss"),
+        "val_perplexity": metrics.get("perplexity"),
+        "val_accuracy": metrics.get("accuracy"),
+    }
+
+
+def push_to_hub(
+    path: str | Path,
+    repo_id: str,
+    path_in_repo: str | None = None,
+    private: bool = True,
+    include_optimizer: bool = False,
+    token: str | None = None,
+) -> str | None:
+    """Upload a checkpoint directory to the Hub. Never raises.
+
+    A failed upload must not end a run that has been training for hours, so
+    every failure here is reported and swallowed: a dropped network or a
+    missing token costs the backup, not the training.
+
+    The optimizer state is excluded by default. It is twice the size of the
+    weights and is only needed to resume, not to use the model.
+    """
+    try:
+        from huggingface_hub import HfApi
+    except ImportError:
+        print("  [hub] huggingface_hub not installed, skipping upload")
+        return None
+
+    path = Path(path)
+    try:
+        state_file = path / STATE_FILE
+        if state_file.exists():
+            state = json.loads(state_file.read_text(encoding="utf-8"))
+            (path / "config.json").write_text(
+                json.dumps(describe_for_hub(state), indent=2), encoding="utf-8"
+            )
+
+        api = HfApi(token=token)
+        api.create_repo(repo_id, private=private, exist_ok=True, repo_type="model")
+        api.upload_folder(
+            repo_id=repo_id,
+            folder_path=str(path),
+            path_in_repo=path_in_repo or path.name,
+            ignore_patterns=None if include_optimizer else [OPTIM_FILE],
+        )
+        url = f"https://huggingface.co/{repo_id}"
+        print(f"  [hub] pushed {path.name} -> {url}")
+        return url
+    except Exception as exc:  # network, auth, rate limit, anything
+        print(f"  [hub] upload of {path.name} failed, continuing: {exc}")
+        return None
+
+
+def read_state(path: str | Path) -> dict[str, Any]:
+    """The state.json beside a checkpoint, or {} if there is none."""
+    state_file = Path(path) / STATE_FILE
+    if not state_file.exists():
+        return {}
+    return json.loads(state_file.read_text(encoding="utf-8"))
+
+
 def write_manifest(out_dir: str | Path, cfg: PretrainConfig, extra: dict[str, Any]) -> Path:
     """The run record: config, hash, and whatever the caller knows about data."""
     from .config import config_hash

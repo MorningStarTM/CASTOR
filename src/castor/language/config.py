@@ -99,6 +99,13 @@ class PretrainConfig:
     compile_model: bool = True
     amp_dtype: str = "bfloat16"   # falls back to float16 where bf16 is unsupported
 
+    # Off-machine checkpointing. A Kaggle session's disk disappears with the
+    # session, so the only copy of a 10 hour run is whatever left the box.
+    hf_repo: str | None = None    # e.g. "ernestbeckham/castor-50m"
+    hf_private: bool = True       # publishing a half-trained arm is rarely wanted
+    push_best: bool = True        # upload whenever held-out loss improves
+    push_latest: bool = False     # upload resumable state too, optimizer included
+
     @property
     def tokens_per_step(self) -> int:
         return self.batch_size * self.grad_accum_steps * self.model.block_size
@@ -137,10 +144,35 @@ def load_pretrain_config(path: str | Path) -> PretrainConfig:
     return PretrainConfig(model=model, optim=optim, **raw)
 
 
+# Fields that determine what the model becomes. Everything outside this set
+# describes where things are read from, written to or reported, and two runs
+# differing only in those are the same run.
+_IDENTITY_FIELDS = (
+    "arm",
+    "model",
+    "optim",
+    "target_tokens",
+    "batch_size",
+    "grad_accum_steps",
+    "amp_dtype",
+    "seed",
+)
+
+
 def config_hash(cfg: PretrainConfig) -> str:
-    """Stable short hash of a config, recorded in every run manifest."""
+    """Stable short hash of the training-determining config.
+
+    The hash names the run directory, so it has to survive the things that
+    change between sessions without changing the run: the dataset mounting at
+    a different path, an output directory, a Hub repo being added, a different
+    logging interval. Hashing the whole config made adding --hf-repo produce a
+    new directory and orphan the checkpoints being resumed from.
+    """
     import hashlib
     import json
 
-    blob = json.dumps(dataclasses.asdict(cfg), sort_keys=True, default=str)
+    identity = {name: getattr(cfg, name) for name in _IDENTITY_FIELDS}
+    identity["model"] = dataclasses.asdict(cfg.model)
+    identity["optim"] = dataclasses.asdict(cfg.optim)
+    blob = json.dumps(identity, sort_keys=True, default=str)
     return hashlib.sha256(blob.encode()).hexdigest()[:12]

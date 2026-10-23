@@ -32,6 +32,11 @@ def main() -> int:
     )
     parser.add_argument("--no-compile", action="store_true")
     parser.add_argument("--device", default=None, help="cuda or cpu; default is whatever exists")
+    parser.add_argument("--hf-repo", default=None, help="push checkpoints here, e.g. user/castor-50m")
+    parser.add_argument("--hf-public", action="store_true", help="make the repo public")
+    parser.add_argument("--push-latest", action="store_true",
+                        help="also upload resumable state (optimizer included, ~3x the size)")
+    parser.add_argument("--no-push", action="store_true", help="never upload, even with --hf-repo")
     parser.add_argument(
         "--ddp",
         nargs="?",
@@ -50,6 +55,14 @@ def main() -> int:
         cfg.out_dir = args.out_dir
     if args.target_tokens:
         cfg.target_tokens = args.target_tokens
+    if args.hf_repo:
+        cfg.hf_repo = args.hf_repo
+    if args.hf_public:
+        cfg.hf_private = False
+    if args.push_latest:
+        cfg.push_latest = True
+    if args.no_push:
+        cfg.push_best = cfg.push_latest = False
     if args.no_compile:
         cfg.compile_model = False
 

@@ -135,6 +135,7 @@ class Pretrainer:
 
         self.step = 0
         self.tokens_seen = 0
+        self.best_loss = float("inf")
         self.history: list[dict[str, Any]] = []
 
         # Each rank draws different windows, or DDP would average identical
@@ -403,23 +404,17 @@ class Pretrainer:
                     self._tokens_at_start = self.tokens_seen
                 if step > start and step % self.cfg.eval_interval == 0:
                     metrics = self.evaluate()
-                    if self.is_master:
-                        print(
-                            f"  val loss {metrics['loss']:.4f} "
-                            f"ppl {metrics['perplexity']:.2f} "
-                            f"acc {metrics['accuracy'] * 100:.2f}%"
-                        )
+                    self._record_eval(metrics)
                 if step > start and step % self.cfg.checkpoint_interval == 0:
                     self.save("latest")
+                    if self.cfg.push_latest:
+                        self._push("latest", include_optimizer=True)
 
             metrics = self.evaluate()
-            if self.is_master:
-                print(
-                    f"final val loss {metrics['loss']:.4f} "
-                    f"ppl {metrics['perplexity']:.2f} "
-                    f"acc {metrics['accuracy'] * 100:.2f}%"
-                )
+            self._record_eval(metrics, final=True)
             self.save("final", extra={"final_metrics": metrics, "parameters": self.parameters})
+            if self.cfg.hf_repo and self.is_master:
+                self._push("final")
         finally:
             if self.distributed:
                 dist.barrier()
@@ -464,6 +459,44 @@ class Pretrainer:
         else:
             print(f"{head} {rate / 1e3:.1f}k tok/s eta {eta_h:.1f}h")
 
+    def _record_eval(self, metrics: dict[str, float], final: bool = False) -> None:
+        """Print an eval, and keep the best weights seen so far.
+
+        Held-out loss does not fall monotonically, so the most recent
+        checkpoint is not the best one. Without this, a run that drifts late
+        leaves you with the drifted weights and the better ones overwritten.
+        """
+        if not self.is_master:
+            return
+
+        label = "final val" if final else "  val"
+        improved = metrics["loss"] < self.best_loss
+        marker = ""
+        if improved:
+            previous, self.best_loss = self.best_loss, metrics["loss"]
+            marker = " * best" + ("" if previous == float("inf") else f" (was {previous:.4f})")
+        print(
+            f"{label} loss {metrics['loss']:.4f} ppl {metrics['perplexity']:.2f} "
+            f"acc {metrics['accuracy'] * 100:.2f}%{marker}"
+        )
+
+        if improved:
+            self.save("best", extra={"metrics": metrics, "parameters": self.parameters})
+            if self.cfg.push_best:
+                self._push("best")
+
+    def _push(self, name: str, include_optimizer: bool = False) -> None:
+        """Back the checkpoint up off the machine, if a repo is configured."""
+        if not (self.cfg.hf_repo and self.is_master):
+            return
+        ckpt.push_to_hub(
+            self.run_dir / name,
+            self.cfg.hf_repo,
+            path_in_repo=name,
+            private=self.cfg.hf_private,
+            include_optimizer=include_optimizer,
+        )
+
     # -------------------------------------------------------------- evaluation
 
     def evaluate(self) -> dict[str, float]:
@@ -498,13 +531,16 @@ class Pretrainer:
             self.cfg,
             self.step,
             self.tokens_seen,
-            extra=extra,
+            extra={"best_loss": self.best_loss, **(extra or {})},
         )
 
     def load(self, path: str | Path) -> "Pretrainer":
         self.step, self.tokens_seen = ckpt.load(
             path, self.raw_model, self.optimizer, map_location=self.device
         )
+        # Carry the best loss across the resume, or the first eval of the new
+        # session would look like an improvement and overwrite a better "best".
+        self.best_loss = float(ckpt.read_state(path).get("best_loss", float("inf")))
         # Advance the sampler so a resumed run does not replay the same windows,
         # keeping the per-rank offset.
         self._rng = np.random.default_rng(self.cfg.seed + 7919 * self.rank + self.step)
