@@ -55,11 +55,23 @@ class GPTConfig:
 class OptimConfig:
     learning_rate: float = 6e-4
     min_lr_ratio: float = 0.1     # cosine floor, as a fraction of peak
-    warmup_steps: int = 2000
+    # Warmup is a fraction of the run, not a fixed step count. Steps are
+    # already derived from the token budget and the world size, so a literal
+    # warmup_steps silently becomes a different fraction of training every
+    # time either changes: 2000 steps is 10% of a 2.5B single-GPU run and 52%
+    # of the same arm at 1B tokens on two GPUs. Set warmup_steps only to
+    # override, and it wins where present.
+    warmup_ratio: float = 0.05
+    warmup_steps: int | None = None
     weight_decay: float = 0.1     # applied to matmul weights only, not biases or norms
     beta1: float = 0.9
     beta2: float = 0.95
     grad_clip: float = 1.0
+
+    def warmup_for(self, max_steps: int) -> int:
+        if self.warmup_steps is not None:
+            return self.warmup_steps
+        return max(1, int(max_steps * self.warmup_ratio))
 
 
 @dataclass

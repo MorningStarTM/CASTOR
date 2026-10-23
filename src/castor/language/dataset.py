@@ -20,7 +20,12 @@ import torch
 class PackedShards:
     """Read-only view over a split written by corpus.pack."""
 
-    def __init__(self, data_dir: str | Path, split: str = "train") -> None:
+    def __init__(
+        self,
+        data_dir: str | Path,
+        split: str = "train",
+        expect_packing: str = "contiguous",
+    ) -> None:
         self.dir = Path(data_dir) / split
         meta_path = self.dir / "meta.json"
         if not meta_path.exists():
@@ -28,6 +33,16 @@ class PackedShards:
                 f"{meta_path} missing. Run scripts/prepare_pretrain_data.py first."
             )
         self.meta = json.loads(meta_path.read_text(encoding="utf-8"))
+
+        # Corpora written before this field existed are contiguous.
+        self.packing = self.meta.get("packing", "contiguous")
+        if expect_packing and self.packing != expect_packing:
+            raise ValueError(
+                f"{self.dir} is packed {self.packing!r} but the caller expects "
+                f"{expect_packing!r}. A contiguous corpus lets a sampled window "
+                f"cross a document boundary, which is right for pretraining and "
+                f"wrong for supervised examples."
+            )
         self.shards = [
             np.memmap(self.dir / s["file"], dtype=np.uint16, mode="r")
             for s in self.meta["shards"]

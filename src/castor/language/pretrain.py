@@ -272,7 +272,7 @@ class Pretrainer:
         return (
             f"arm={self.cfg.arm} "
             f"params={p['total'] / 1e6:.1f}M (non-embedding {p['non_embedding'] / 1e6:.1f}M) "
-            f"world={self.world_size} steps={self.max_steps} "
+            f"world={self.world_size} steps={self.max_steps} warmup={self.warmup_steps} "
             f"tokens/step={self.global_tokens_per_step:,} "
             f"corpus={self.train_shards.total_tokens:,} "
             f"device={self.device} amp={self._amp_dtype} compiled={self._compiled}"
@@ -297,11 +297,16 @@ class Pretrainer:
 
     # ---------------------------------------------------------------- training
 
+    @property
+    def warmup_steps(self) -> int:
+        """Warmup resolved against this run's derived step count."""
+        return self.cfg.optim.warmup_for(self.max_steps)
+
     def learning_rate(self, step: int) -> float:
         return lr_at(
             step,
             self.cfg.optim.learning_rate,
-            self.cfg.optim.warmup_steps,
+            self.warmup_steps,
             self.max_steps,
             self.cfg.optim.min_lr_ratio,
         )

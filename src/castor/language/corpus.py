@@ -252,6 +252,12 @@ def pack(
             "eos_token_id": eos,
             "tokenizer": tokenizer.name_or_path,
             "holdout_share": f"{HOLDOUT_SHARE}/{HOLDOUT_BUCKETS}",
+            # How documents sit in the shard. "contiguous" means they are
+            # concatenated with an EOS between them and a sampled window may
+            # straddle a boundary. Correct for pretraining, wrong for
+            # supervised examples that must not bleed into each other, so the
+            # mode is recorded rather than assumed by whoever reads this later.
+            "packing": "contiguous",
             "shards": writer.shards,
             "sources": [
                 {"name": s.name, "hf_path": s.hf_path, "weight": s.weight} for s in cfg.sources
