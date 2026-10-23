@@ -15,7 +15,7 @@ useful than train():
     trainer = Pretrainer(cfg, resume="experiments/runs/.../latest.pt").setup()
     trainer.evaluate()
     trainer.train_step(trainer.step)
-    trainer.save("latest.pt")
+    trainer.save("latest")
 
 Distributed
 -----------
@@ -369,12 +369,12 @@ class Pretrainer:
                     if self.is_master:
                         print(f"  val loss {metrics['loss']:.4f} ppl {metrics['perplexity']:.2f}")
                 if step > start and step % self.cfg.checkpoint_interval == 0:
-                    self.save("latest.pt")
+                    self.save("latest")
 
             metrics = self.evaluate()
             if self.is_master:
                 print(f"final val loss {metrics['loss']:.4f} ppl {metrics['perplexity']:.2f}")
-            self.save("final.pt", extra={"final_metrics": metrics, "parameters": self.parameters})
+            self.save("final", extra={"final_metrics": metrics, "parameters": self.parameters})
         finally:
             if self.distributed:
                 dist.barrier()
@@ -433,7 +433,7 @@ class Pretrainer:
 
     # ------------------------------------------------------------ persistence
 
-    def save(self, name: str = "latest.pt", extra: dict[str, Any] | None = None) -> Path | None:
+    def save(self, name: str = "latest", extra: dict[str, Any] | None = None) -> Path | None:
         """Write a checkpoint from the master. Other ranks hold identical weights."""
         if not self.is_master:
             return None

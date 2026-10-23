@@ -12,7 +12,7 @@ here are identical but for the weights.
     dataset.py      memory-mapped batching over those shards
     model.py        builds gpt.py into a configured arm
     schedule.py     warmup then cosine decay
-    checkpoint.py   atomic saves, resume, run manifests
+    checkpoint.py   safetensors checkpoints, resume, run manifests
     pretrain.py     the training loop
     perplexity.py   held-out loss, and later the Phase 2 exit test
 

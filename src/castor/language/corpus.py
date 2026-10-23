@@ -16,6 +16,7 @@ silently producing a smaller corpus.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -64,6 +65,23 @@ class MixConfig:
         raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
         sources = [Source(**s) for s in raw.pop("sources", [])]
         return MixConfig(sources=sources, **raw)
+
+
+HOLDOUT_BUCKETS = 10_000
+HOLDOUT_SHARE = 20  # 20/10000 = 0.2% of documents are never used for training
+
+
+def is_holdout(text: str) -> bool:
+    """Assign a document to validation by a hash of its content.
+
+    Both splits stream the same shuffled mixture, so splitting by position
+    would put the validation documents at the front of the training stream and
+    the held-out loss would be training loss. Hashing the text decides the
+    split per document, identically on every machine and every rerun, so the
+    two splits cannot overlap however many times either is regenerated.
+    """
+    digest = hashlib.blake2b(text.encode("utf-8", "ignore"), digest_size=8).digest()
+    return int.from_bytes(digest, "big") % HOLDOUT_BUCKETS < HOLDOUT_SHARE
 
 
 def stream_mixture(cfg: MixConfig) -> Iterator[str]:
@@ -131,8 +149,11 @@ def pack(
             shards.append({"file": path.name, "tokens": len(take)})
             shard_index += 1
 
+    want_holdout = split == "val"
     batch: list[str] = []
     for document in stream_mixture(cfg):
+        if is_holdout(document) != want_holdout:
+            continue
         batch.append(document)
         if len(batch) < 1000:
             continue
