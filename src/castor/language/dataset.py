@@ -17,6 +17,34 @@ import numpy as np
 import torch
 
 
+def _locate_split(root: Path, split: str) -> tuple[Path, str]:
+    """Find a split's files, nested or flattened. Returns (directory, prefix).
+
+    corpus.pack writes `<root>/train/meta.json` and `<root>/train/shard_0000.bin`.
+    Some upload paths, Kaggle datasets among them, flatten a directory tree into
+    one directory and fold the separators into the names, so the same split
+    arrives as `<root>/train_meta.json` and `<root>/train_shard_0000.bin`. The
+    contents are identical and re-uploading a 2GB corpus to restore two
+    directories would be a waste, so both layouts are read.
+    """
+    if (root / split / "meta.json").exists():
+        return root / split, ""
+    if (root / f"{split}_meta.json").exists():
+        return root, f"{split}_"
+
+    # A dataset may also sit one level down, under its own folder.
+    for candidate in sorted(p for p in root.glob("*") if p.is_dir()):
+        if (candidate / split / "meta.json").exists():
+            return candidate / split, ""
+        if (candidate / f"{split}_meta.json").exists():
+            return candidate, f"{split}_"
+
+    raise FileNotFoundError(
+        f"no {split} split under {root}: expected {split}/meta.json or "
+        f"{split}_meta.json. Run scripts/prepare_pretrain_data.py first."
+    )
+
+
 class PackedShards:
     """Read-only view over a split written by corpus.pack."""
 
@@ -26,13 +54,8 @@ class PackedShards:
         split: str = "train",
         expect_packing: str = "contiguous",
     ) -> None:
-        self.dir = Path(data_dir) / split
-        meta_path = self.dir / "meta.json"
-        if not meta_path.exists():
-            raise FileNotFoundError(
-                f"{meta_path} missing. Run scripts/prepare_pretrain_data.py first."
-            )
-        self.meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        self.dir, self._prefix = _locate_split(Path(data_dir), split)
+        self.meta = json.loads((self.dir / f"{self._prefix}meta.json").read_text(encoding="utf-8"))
 
         # Corpora written before this field existed are contiguous.
         self.packing = self.meta.get("packing", "contiguous")
@@ -44,7 +67,9 @@ class PackedShards:
                 f"wrong for supervised examples."
             )
         self.shards = [
-            np.memmap(self.dir / s["file"], dtype=np.uint16, mode="r")
+            # meta.json records the name as written; a flattened upload carries
+            # the split prefix, so it goes back on here.
+            np.memmap(self.dir / f"{self._prefix}{s['file']}", dtype=np.uint16, mode="r")
             for s in self.meta["shards"]
         ]
         if not self.shards:
