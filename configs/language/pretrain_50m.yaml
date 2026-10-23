@@ -1,4 +1,17 @@
 # 50M arm. 42.1M parameters: 25.2M non-embedding, 16.4M embedding.
+#
+# Sized for Kaggle's 2 x T4 (16GB each, Turing: fp16 but no bf16, no NVLink).
+#
+# Memory, measured on a 42.1M arm at block_size 1024 and extrapolated:
+#   fixed   (params + grads + AdamW state)      ~1.0 GB
+#   per sequence in the micro-batch             ~1.1 GB
+#   batch_size 8  ->  ~9.8 GB, ~6 GB spare
+#   batch_size 12 -> ~14.2 GB, too tight once DDP's gradient buckets and
+#                    allocator fragmentation are counted
+# 8 is the safe choice. Confirm with the probe before a long run and raise it
+# if your headroom says you can: gpt.py's attention launches many small
+# kernels, so a larger micro-batch buys real throughput here.
+
 arm: 50m
 
 model:
@@ -7,25 +20,41 @@ model:
   n_layer: 8
   n_head: 8
   n_emb: 512
-  dropout: 0.0
+  dropout: 0.0          # one pass over 1B tokens cannot overfit 42M parameters
   tie_embeddings: true
 
 optim:
   learning_rate: 6.0e-4
   min_lr_ratio: 0.1
-  warmup_ratio: 0.05
+  warmup_ratio: 0.05    # a fraction of the run, so it survives a budget change
   weight_decay: 0.1
   grad_clip: 1.0
 
-# ~2.5B tokens, around 60 tokens per parameter.
-target_tokens: 2_500_000_000
-batch_size: 16
+# Budget. Matches the 1,000,335,026 tokens packed from FineWeb-Edu plus the
+# ArXiv/StackExchange slice: roughly 24 tokens per parameter, a little above
+# Chinchilla. --target-tokens overrides this without editing the file.
+target_tokens: 1_000_000_000
+
+# Per rank, per micro-step. Global tokens per optimizer step is
+#   batch_size * grad_accum_steps * block_size * world_size
+#   = 8 * 8 * 1024 * 2 = 131,072  ->  ~7,629 steps for the budget above.
+# Twice this batch would halve the step count, and ~7.6k optimizer steps is
+# already the low end of comfortable for a model this size.
+batch_size: 8
 grad_accum_steps: 8
 
 # A Kaggle session can end at any time; checkpoint often enough that it costs
-# minutes rather than hours.
+# minutes rather than hours. ~38 checkpoints, ~30 evals across the run.
 checkpoint_interval: 200
 eval_interval: 250
+eval_batches: 50        # 410k tokens per eval, enough for a stable estimate
+log_interval: 20
+
+# bfloat16 is requested, not assumed: T4 is Turing and has none, so the
+# trainer falls back to float16 with the gradient scaler and says so. The same
+# config then uses real bf16 unchanged on an A100 or better.
+amp_dtype: bfloat16
+compile_model: true
 
 data_dir: data/text_corpus/tokenized
 out_dir: experiments/runs
