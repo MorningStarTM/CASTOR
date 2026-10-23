@@ -32,16 +32,19 @@ def _locate_split(root: Path, split: str) -> tuple[Path, str]:
     if (root / f"{split}_meta.json").exists():
         return root, f"{split}_"
 
-    # A dataset may also sit one level down, under its own folder.
-    for candidate in sorted(p for p in root.glob("*") if p.is_dir()):
-        if (candidate / split / "meta.json").exists():
-            return candidate / split, ""
-        if (candidate / f"{split}_meta.json").exists():
-            return candidate, f"{split}_"
+    # Otherwise search. Mount points nest unpredictably: a Kaggle dataset can
+    # land under its slug, its title, or a versioned folder, and guessing the
+    # depth has not worked. Look for the file instead of the directory.
+    for found in sorted(root.rglob("meta.json")):
+        if found.parent.name == split:
+            return found.parent, ""
+    for found in sorted(root.rglob(f"{split}_meta.json")):
+        return found.parent, f"{split}_"
 
+    listing = "\n".join(f"  {p}" for p in sorted(root.rglob("*"))[:40]) or "  (empty)"
     raise FileNotFoundError(
         f"no {split} split under {root}: expected {split}/meta.json or "
-        f"{split}_meta.json. Run scripts/prepare_pretrain_data.py first."
+        f"{split}_meta.json anywhere beneath it.\nWhat is actually there:\n{listing}"
     )
 
 
