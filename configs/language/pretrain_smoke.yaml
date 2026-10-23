@@ -14,7 +14,7 @@ model:
   n_emb: 256
 
 optim:
-  warmup_steps: 20
+  warmup_ratio: 0.05
 
 target_tokens: 2_000_000
 batch_size: 2

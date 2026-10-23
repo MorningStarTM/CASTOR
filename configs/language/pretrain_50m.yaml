@@ -13,7 +13,7 @@ model:
 optim:
   learning_rate: 6.0e-4
   min_lr_ratio: 0.1
-  warmup_steps: 2000
+  warmup_ratio: 0.05
   weight_decay: 0.1
   grad_clip: 1.0
 
@@ -21,6 +21,11 @@ optim:
 target_tokens: 2_500_000_000
 batch_size: 16
 grad_accum_steps: 8
+
+# A Kaggle session can end at any time; checkpoint often enough that it costs
+# minutes rather than hours.
+checkpoint_interval: 200
+eval_interval: 250
 
 data_dir: data/text_corpus/tokenized
 out_dir: experiments/runs
