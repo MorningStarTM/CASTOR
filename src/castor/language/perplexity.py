@@ -31,15 +31,31 @@ def evaluate(
     rng = np.random.default_rng(seed)  # fixed seed: the same windows every eval
 
     losses = []
+    correct = 0
+    counted = 0
     for _ in range(batches):
         x, y = shards.batch(batch_size, block_size, rng, device=device)
         if autocast_dtype is not None and device.startswith("cuda"):
             with torch.autocast(device_type="cuda", dtype=autocast_dtype):
-                _, loss = model(x, y)
+                logits, loss = model(x, y)
         else:
-            _, loss = model(x, y)
+            logits, loss = model(x, y)
         losses.append(loss.item())
+
+        # gpt.py flattens logits to (batch * block, vocab) when targets are
+        # given, so the targets flatten the same way. This is top-1 next-token
+        # accuracy: the share of positions where the most likely token was the
+        # right one. It is not a measure of quality the way perplexity is, but
+        # it moves early and reads more plainly than a log loss.
+        predicted = logits.argmax(dim=-1)
+        target = y.reshape(-1)
+        correct += int((predicted == target).sum().item())
+        counted += target.numel()
 
     model.train(was_training)
     mean = float(np.mean(losses))
-    return {"loss": mean, "perplexity": math.exp(min(mean, 20.0))}
+    return {
+        "loss": mean,
+        "perplexity": math.exp(min(mean, 20.0)),
+        "accuracy": correct / counted if counted else float("nan"),
+    }

@@ -390,19 +390,35 @@ class Pretrainer:
         try:
             for step in range(start, self.max_steps):
                 loss = self.train_step(step)
+                first = step == start
 
                 if step % self.cfg.log_interval == 0:
-                    self._log_progress(step, self._mean_across_ranks(loss))
+                    self._log_progress(step, self._mean_across_ranks(loss), warming_up=first)
+                if first:
+                    # The first step carries torch.compile's warmup, which is
+                    # minutes of graph compilation rather than throughput.
+                    # Restart the clock so the rate and ETA from here describe
+                    # steady state instead of amortising a one-off cost.
+                    self._t0 = time.time()
+                    self._tokens_at_start = self.tokens_seen
                 if step > start and step % self.cfg.eval_interval == 0:
                     metrics = self.evaluate()
                     if self.is_master:
-                        print(f"  val loss {metrics['loss']:.4f} ppl {metrics['perplexity']:.2f}")
+                        print(
+                            f"  val loss {metrics['loss']:.4f} "
+                            f"ppl {metrics['perplexity']:.2f} "
+                            f"acc {metrics['accuracy'] * 100:.2f}%"
+                        )
                 if step > start and step % self.cfg.checkpoint_interval == 0:
                     self.save("latest")
 
             metrics = self.evaluate()
             if self.is_master:
-                print(f"final val loss {metrics['loss']:.4f} ppl {metrics['perplexity']:.2f}")
+                print(
+                    f"final val loss {metrics['loss']:.4f} "
+                    f"ppl {metrics['perplexity']:.2f} "
+                    f"acc {metrics['accuracy'] * 100:.2f}%"
+                )
             self.save("final", extra={"final_metrics": metrics, "parameters": self.parameters})
         finally:
             if self.distributed:
@@ -417,7 +433,7 @@ class Pretrainer:
         dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
         return float(tensor.item() / self.world_size)
 
-    def _log_progress(self, step: int, loss: float) -> None:
+    def _log_progress(self, step: int, loss: float, warming_up: bool = False) -> None:
         if not self.is_master:
             return
         elapsed = max(time.time() - self._t0, 1e-6)
@@ -425,19 +441,28 @@ class Pretrainer:
         rate = done / elapsed if done else 0.0
         remaining = (self.max_steps - step) * self.global_tokens_per_step
         eta_h = remaining / rate / 3600 if rate else float("nan")
+        # There are no epochs here: windows are drawn at random from the
+        # corpus against a token budget, never swept in order. This is the
+        # equivalent, how many times the budget has covered the corpus, which
+        # is the number an epoch count would be standing in for anyway.
+        epoch = self.tokens_seen / max(1, self.train_shards.total_tokens)
         record = {
             "step": step,
             "loss": loss,
             "lr": self.learning_rate(step),
             "tokens": self.tokens_seen,
+            "epoch": epoch,
             "tokens_per_s": rate,
         }
         self.history.append(record)
-        print(
-            f"step {step:>6}/{self.max_steps} loss {loss:.4f} "
-            f"lr {record['lr']:.2e} tok {self.tokens_seen / 1e9:.3f}B "
-            f"{rate / 1e3:.1f}k tok/s eta {eta_h:.1f}h"
+        head = (
+            f"step {step:>6}/{self.max_steps} ep {epoch:4.2f} loss {loss:.4f} "
+            f"lr {record['lr']:.2e} tok {self.tokens_seen / 1e9:.3f}B"
         )
+        if warming_up:
+            print(f"{head}  (first step: includes compile warmup, rate not yet meaningful)")
+        else:
+            print(f"{head} {rate / 1e3:.1f}k tok/s eta {eta_h:.1f}h")
 
     # -------------------------------------------------------------- evaluation
 
@@ -449,7 +474,7 @@ class Pretrainer:
         windows would only duplicate the work.
         """
         if not self.is_master:
-            return {"loss": float("nan"), "perplexity": float("nan")}
+            return {"loss": float("nan"), "perplexity": float("nan"), "accuracy": float("nan")}
         return evaluate_split(
             self.raw_model,
             self.val_shards,
