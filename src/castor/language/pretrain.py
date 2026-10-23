@@ -230,13 +230,37 @@ class Pretrainer:
         name = self.cfg.amp_dtype
         if not self.device.startswith("cuda") or name == "float32":
             self._amp_dtype = None
-        elif name == "bfloat16" and torch.cuda.is_bf16_supported():
+        elif name == "bfloat16" and self._has_native_bf16():
             self._amp_dtype = torch.bfloat16
         elif name in ("bfloat16", "float16"):
             self._amp_dtype = torch.float16
         else:
             self._amp_dtype = None
-        self._scaler = torch.cuda.amp.GradScaler(enabled=self._amp_dtype is torch.float16)
+
+        try:  # torch >= 2.4
+            self._scaler = torch.amp.GradScaler(
+                "cuda", enabled=self._amp_dtype is torch.float16
+            )
+        except (AttributeError, TypeError):
+            self._scaler = torch.cuda.amp.GradScaler(
+                enabled=self._amp_dtype is torch.float16
+            )
+
+    def _has_native_bf16(self) -> bool:
+        """True only where bfloat16 runs in hardware, Ampere and later.
+
+        torch.cuda.is_bf16_supported() is not this test: it counts emulation,
+        so it answers True on a T4, which has no bfloat16 units. Taking that
+        answer costs twice. The arithmetic is emulated rather than run on the
+        tensor cores, and Inductor refuses to compile bfloat16 graphs for such
+        a card, so torch.compile silently does nothing while reporting success.
+        Compute capability 8.0 is the first with real bfloat16.
+        """
+        if not self.device.startswith("cuda"):
+            return False
+        index = self.local_rank if self.distributed else torch.cuda.current_device()
+        major, _ = torch.cuda.get_device_capability(index)
+        return major >= 8
 
     def _maybe_compile(self) -> None:
         """Compile if asked and available. Never fatal: Triton is absent on Windows."""
