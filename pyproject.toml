@@ -15,6 +15,7 @@ dependencies = [
   "numpy",
   "torch",
   "pyyaml",
+  "safetensors",
 ]
 
 [project.optional-dependencies]
