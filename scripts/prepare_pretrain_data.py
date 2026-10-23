@@ -20,6 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from castor.language.corpus import MixConfig, pack  # noqa: E402
+from castor.utils.kaggle import push_dataset  # noqa: E402
 from castor.language.tokenizer import (  # noqa: E402
     DEFAULT_MAX_TOKENS_PER_NAME,
     audit_tokenizer,
@@ -41,6 +42,9 @@ def main() -> int:
     parser.add_argument(
         "--force", action="store_true", help="pack even if the tokenizer audit fails"
     )
+    parser.add_argument("--kaggle-dataset", default=None,
+                        help="publish the shards here on completion, e.g. user/castor-tokenized")
+    parser.add_argument("--kaggle-public", action="store_true")
     args = parser.parse_args()
 
     tok_cfg = load_tokenizer_config(args.tokenizer)
@@ -78,6 +82,16 @@ def main() -> int:
     if meta["val"]["tokens"] == 0:
         print("  WARNING: validation split is empty", file=sys.stderr)
         return 1
+
+    if args.kaggle_dataset:
+        print()
+        push_dataset(
+            args.out,
+            args.kaggle_dataset,
+            title="CASTOR tokenized corpus",
+            public=args.kaggle_public,
+            notes=f"{meta['train']['tokens']:,} train / {meta['val']['tokens']:,} val tokens",
+        )
     return 0
 
 

@@ -30,6 +30,7 @@ from castor.language.domain import (  # noqa: E402
     from_text_dir,
     pack_domain,
 )
+from castor.utils.kaggle import push_dataset  # noqa: E402
 from castor.language.tokenizer import (  # noqa: E402
     DEFAULT_MAX_TOKENS_PER_NAME,
     audit_tokenizer,
@@ -58,6 +59,9 @@ def main() -> int:
     parser.add_argument("--jsonl", default=None, help="also write the records, with provenance")
     parser.add_argument("--holdout-share", type=float, default=0.05,
                         help="fraction of documents held out for the Phase 2 exit test")
+    parser.add_argument("--kaggle-dataset", default=None,
+                        help="publish the shards here on completion, e.g. user/castor-domain")
+    parser.add_argument("--kaggle-public", action="store_true")
     args = parser.parse_args()
 
     tok_cfg = load_tokenizer_config(args.tokenizer)
