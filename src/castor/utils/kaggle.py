@@ -23,25 +23,46 @@ Inside a Kaggle notebook neither is set by default; see push_dataset's docstring
 from __future__ import annotations
 
 import json
+import os
 import shutil
-import tempfile
 from pathlib import Path
 
 
 def flatten_for_upload(source: str | Path, destination: str | Path | None = None) -> Path:
-    """Copy a tree into one directory, folding separators into names.
+    """Stage a tree as one directory, folding separators into names.
 
     train/shard_0000.bin becomes train_shard_0000.bin, which is exactly the
     layout Kaggle produces on its own and which _locate_split understands.
     Doing it here makes the result the same whichever upload path is used.
+
+    Files are hard linked rather than copied. A 6B token corpus is about 12GB
+    and Kaggle's working directory caps at 20GB, so copying it to stage the
+    upload would run the session out of disk. A hard link is a second name for
+    the same bytes and costs nothing. Falls back to copying when the staging
+    directory is on another filesystem, which is why it defaults to a sibling
+    of the source rather than the system temp directory.
     """
     source = Path(source)
-    destination = Path(destination or tempfile.mkdtemp())
+    destination = Path(destination or (source.parent / f"{source.name}_upload"))
     destination.mkdir(parents=True, exist_ok=True)
+
+    linked = copied = 0
     for path in sorted(source.rglob("*")):
-        if path.is_file():
-            flat = path.relative_to(source).as_posix().replace("/", "_")
-            shutil.copy2(path, destination / flat)
+        if not path.is_file():
+            continue
+        target = destination / path.relative_to(source).as_posix().replace("/", "_")
+        if target.exists():
+            target.unlink()
+        try:
+            os.link(path, target)
+            linked += 1
+        except OSError:  # cross-device, or a filesystem without hard links
+            shutil.copy2(path, target)
+            copied += 1
+
+    size = sum(f.stat().st_size for f in destination.iterdir() if f.is_file())
+    note = f"{linked} linked" + (f", {copied} copied" if copied else "")
+    print(f"  [kaggle] staged {linked + copied} files ({size / 1e9:.2f} GB, {note})")
     return destination
 
 
