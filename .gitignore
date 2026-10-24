@@ -229,3 +229,4 @@ experiments/**
 docs/
 papers/
 notebooks/
+logs/
