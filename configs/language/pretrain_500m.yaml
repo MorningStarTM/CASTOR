@@ -1,0 +1,66 @@
+# 500M arm. 514.1M parameters: 471.9M non-embedding, 41.0M embedding.
+#
+# THIS ARM DOES NOT RUN ON KAGGLE. It needs a 40GB card or larger, and the
+# numbers are worth reading before booking one.
+#
+# Measured on 2 x T4: the 50M arm sustained 52,100 tok/s, which is 13.2 TFLOP/s
+# across both cards. At the same utilisation this arm would manage ~4,300 tok/s,
+# so 10B tokens is roughly 650 hours. Kaggle's free quota is 30 hours a week.
+#
+# Memory is the harder wall. Weights, gradients and AdamW's two moments come to
+# 8.2GB before a single activation, and gpt.py keeps a (batch, 20, 1024, 1024)
+# attention matrix per layer for the backward pass, which at 24 layers is about
+# 8GB for one sequence. A 16GB T4 cannot hold batch 1.
+#
+# So this arm needs both:
+#   * an A100 40GB (batch 4) or 80GB (batch 8-12), or equivalent
+#   * fused QKV + scaled_dot_product_attention in gpt.py, which removes the
+#     materialised attention matrix entirely. At this size that stops being an
+#     optimisation and becomes a requirement.
+#
+# On one A100 80GB with fused attention, 10B tokens is a few days.
+
+arm: 500m
+
+model:
+  vocab_size: 32000
+  block_size: 1024
+  n_layer: 24
+  n_head: 20          # head dimension 64, as in the smaller arms
+  n_emb: 1280
+  dropout: 0.0
+  tie_embeddings: true
+
+optim:
+  # Lower peak than the smaller arms: wider models are less tolerant of a high
+  # learning rate, and gpt.py normalises after the residual add rather than
+  # before, which is least forgiving exactly at this depth.
+  learning_rate: 3.0e-4
+  min_lr_ratio: 0.1
+  warmup_ratio: 0.05
+  weight_decay: 0.1
+  grad_clip: 1.0
+
+# 10B tokens is ~19 per parameter, about Chinchilla. Below this the arm is
+# undertrained and will lose to a well-fed 100M model, which would make the
+# size comparison meaningless.
+target_tokens: 10_000_000_000
+
+# Sized for a 40GB card. On 80GB raise batch_size to 8 and halve
+# grad_accum_steps to keep the same global batch.
+batch_size: 4
+grad_accum_steps: 16
+
+checkpoint_interval: 200
+eval_interval: 500
+eval_batches: 50
+log_interval: 20
+
+# Ampere and later have real bfloat16, so this arm gets it rather than the
+# float16 fallback the T4 arms run on.
+amp_dtype: bfloat16
+compile_model: true
+
+data_dir: data/text_corpus/tokenized
+out_dir: experiments/runs
+seed: 1337

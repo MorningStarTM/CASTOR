@@ -1,16 +1,52 @@
 # 100M arm. 96.1M parameters: 70.8M non-embedding, 24.6M embedding.
 # n_layer is 10 rather than 12 to stay under the 100M ceiling.
-defaults: [pretrain_50m.yaml]
+#
+# Self-contained rather than inheriting from the 50M arm, so that arm can be
+# retired without silently changing this one.
+#
+# Sized for Kaggle's 2 x T4. Activations scale with n_layer * n_emb and with
+# n_layer * n_head * block_size squared, both roughly twice the 50M arm's, so
+# the micro-batch halves from 8 to 4 and grad_accum doubles. That keeps the
+# global batch at 131,072 tokens, identical to the 50M arm, which is what
+# makes the two comparable.
+#
+# At the 22,800 tok/s this size should reach on 2 x T4, 6B tokens is about
+# 73 hours: two to three Kaggle sessions with --resume.
+
 arm: 100m
 
 model:
+  vocab_size: 32000
+  block_size: 1024
   n_layer: 10
   n_head: 12
   n_emb: 768
+  dropout: 0.0
+  tie_embeddings: true
 
 optim:
-  learning_rate: 4.0e-4   # lower peak for the wider model
+  learning_rate: 4.0e-4   # lower peak than the 50M arm, for the wider model
+  min_lr_ratio: 0.1
+  warmup_ratio: 0.05
+  weight_decay: 0.1
+  grad_clip: 1.0
 
-target_tokens: 5_000_000_000
-batch_size: 12
+# ~62 tokens per parameter, comfortably past Chinchilla.
+target_tokens: 6_000_000_000
+
+# 4 * 1024 * 16 * 2 ranks = 131,072 global tokens per optimizer step,
+# the same as the 50M arm.
+batch_size: 4
 grad_accum_steps: 16
+
+checkpoint_interval: 200
+eval_interval: 250
+eval_batches: 50
+log_interval: 20
+
+amp_dtype: bfloat16     # falls back to float16 on T4, which has no bf16 units
+compile_model: true
+
+data_dir: data/text_corpus/tokenized
+out_dir: experiments/runs
+seed: 1337
