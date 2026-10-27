@@ -46,10 +46,20 @@ optim:
 # size comparison meaningless.
 target_tokens: 10_000_000_000
 
-# Sized for a 40GB card. On 80GB raise batch_size to 8 and halve
-# grad_accum_steps to keep the same global batch.
-batch_size: 4
-grad_accum_steps: 16
+# Sized to fit a 16GB T4, which is the most that can be made to work there.
+# Measured from an OOM at batch 4: the fixed cost of weights, gradients and
+# AdamW's two moments is 8.2GB, and activations are about 89MB per layer per
+# sequence across 24 layers. That gives 10.4GB at batch 1, 12.5GB at batch 2
+# and 14.7GB at batch 3, against 14.56GB usable. Two is the ceiling.
+#
+# Note that two GPUs do not raise this ceiling. DDP replicates the whole model
+# on each card, so the limit is one card's memory however many are attached.
+#
+# On a 40GB card use batch_size 8 / grad_accum 8, on 80GB use 16 / 4. Keep the
+# product times block_size times world_size at 131,072 so the global batch
+# matches the other arms.
+batch_size: 2
+grad_accum_steps: 32
 
 checkpoint_interval: 200
 eval_interval: 500
