@@ -27,6 +27,8 @@ def main() -> int:
     parser.add_argument("--resume", default=None)
     parser.add_argument("--data-dir", default=None, help="override the config's data_dir")
     parser.add_argument("--out-dir", default=None, help="override the config's out_dir")
+    parser.add_argument("--shards", default=None,
+                        help='train on a subset of shards, e.g. "0-9" or "0,3,5" (default: all)')
     parser.add_argument(
         "--target-tokens", type=int, default=None, help="override the token budget"
     )
@@ -53,6 +55,8 @@ def main() -> int:
         cfg.data_dir = args.data_dir
     if args.out_dir:
         cfg.out_dir = args.out_dir
+    if args.shards:
+        cfg.shards = args.shards
     if args.target_tokens:
         cfg.target_tokens = args.target_tokens
     if args.hf_repo:

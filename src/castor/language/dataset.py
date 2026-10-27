@@ -12,9 +12,49 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Sequence
 
 import numpy as np
 import torch
+
+
+def _select_shards(spec: str | Sequence[int] | None, available: int) -> list[int]:
+    """Resolve which shards to read. None means all of them.
+
+    Accepts indices or a compact string: "0-9", "0,3,5", "0-9,20". Selecting a
+    subset does not reduce memory, since shards are memory mapped and cost only
+    the pages actually touched. What it gives is control over coverage: windows
+    are drawn at random with replacement, so a budget equal to the corpus sees
+    only about 63% of it. Training consecutive sessions on consecutive shards
+    covers everything exactly once instead.
+    """
+    if spec is None:
+        return list(range(available))
+
+    if isinstance(spec, str):
+        indices: list[int] = []
+        for part in spec.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if "-" in part[1:]:
+                low, high = part.split("-", 1)
+                indices.extend(range(int(low), int(high) + 1))
+            else:
+                indices.append(int(part))
+    else:
+        indices = [int(i) for i in spec]
+
+    chosen = sorted(set(indices))
+    out_of_range = [i for i in chosen if not 0 <= i < available]
+    if out_of_range:
+        raise ValueError(
+            f"shard(s) {out_of_range} requested but the split has {available} "
+            f"(valid range 0-{available - 1})"
+        )
+    if not chosen:
+        raise ValueError(f"shard selection {spec!r} matched nothing")
+    return chosen
 
 
 def _locate_split(root: Path, split: str) -> tuple[Path, str]:
@@ -56,6 +96,7 @@ class PackedShards:
         data_dir: str | Path,
         split: str = "train",
         expect_packing: str = "contiguous",
+        shards: str | Sequence[int] | None = None,
     ) -> None:
         self.dir, self._prefix = _locate_split(Path(data_dir), split)
         self.meta = json.loads((self.dir / f"{self._prefix}meta.json").read_text(encoding="utf-8"))
@@ -69,11 +110,13 @@ class PackedShards:
                 f"cross a document boundary, which is right for pretraining and "
                 f"wrong for supervised examples."
             )
+        entries = self.meta["shards"]
+        self.selected = _select_shards(shards, len(entries))
         self.shards = [
             # meta.json records the name as written; a flattened upload carries
             # the split prefix, so it goes back on here.
-            np.memmap(self.dir / f"{self._prefix}{s['file']}", dtype=np.uint16, mode="r")
-            for s in self.meta["shards"]
+            np.memmap(self.dir / f"{self._prefix}{entries[i]['file']}", dtype=np.uint16, mode="r")
+            for i in self.selected
         ]
         if not self.shards:
             raise ValueError(f"{self.dir} contains no shards")

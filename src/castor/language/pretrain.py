@@ -202,7 +202,9 @@ class Pretrainer:
         return self
 
     def _load_data(self) -> None:
-        self.train_shards = PackedShards(self.cfg.data_dir, "train")
+        self.train_shards = PackedShards(self.cfg.data_dir, "train", shards=self.cfg.shards)
+        # Validation reads every shard regardless, so held-out loss stays
+        # comparable across sessions that train on different slices.
         self.val_shards = PackedShards(self.cfg.data_dir, "val")
         corpus_vocab = self.train_shards.meta["vocab_size"]
         if corpus_vocab != self.cfg.model.vocab_size:
@@ -300,6 +302,8 @@ class Pretrainer:
             f"world={self.world_size} steps={self.max_steps} warmup={self.warmup_steps} "
             f"tokens/step={self.global_tokens_per_step:,} "
             f"corpus={self.train_shards.total_tokens:,} "
+            f"shards={len(self.train_shards.shards)}"
+            f"{'/' + str(len(self.train_shards.meta['shards'])) if self.cfg.shards else ''} "
             f"device={self.device} amp={self._amp_dtype} compiled={self._compiled}"
         )
 

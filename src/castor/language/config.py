@@ -88,6 +88,11 @@ class PretrainConfig:
     grad_accum_steps: int = 8     # effective batch = batch_size * grad_accum * block_size
 
     data_dir: str = "data/text_corpus/tokenized"
+    # Which training shards to read. None means all. "0-9" or "0,3,5" selects
+    # a subset, which is how consecutive sessions cover a corpus exactly once
+    # instead of resampling the whole of it at random. Validation always reads
+    # every shard, so the held-out number stays comparable between sessions.
+    shards: str | None = None
     out_dir: str = "experiments/runs"
     seed: int = 1337
 
