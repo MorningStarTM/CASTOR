@@ -25,7 +25,7 @@ import json
 import re
 from dataclasses import dataclass
 
-from .client import Client, extract_json
+from .client import Client, QuotaExhausted, extract_json
 from .config import ModelConfig, VerificationConfig
 from .generate import RawPair
 from .schema import (
@@ -127,6 +127,12 @@ def verify(client: Client, model: ModelConfig, pairs: list[RawPair],
         reply, used = client.complete_any(
             model, build_prompt(page_id, page_text, pairs, templates))
         payload = extract_json(reply)
+    except QuotaExhausted:
+        # The one failure this function must not absorb. Marking the rows
+        # unchecked and returning would let the caller walk to the next page
+        # and spend the whole fallback chain again on an allowance that is
+        # already gone, which is how a run reaches page 6 of 244.
+        raise
     except Exception as exc:   # noqa: BLE001 - a judge failing must not stop the run
         return [Verdict(UNCHECKED, s, None, None, f"verifier unavailable: {type(exc).__name__}")
                 for s in spans]

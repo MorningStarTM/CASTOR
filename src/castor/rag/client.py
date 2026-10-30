@@ -27,6 +27,76 @@ class TeacherError(RuntimeError):
     """An API failure the caller should stop on rather than retry."""
 
 
+class QuotaExhausted(TeacherError):
+    """The daily free-model allowance is spent.
+
+    Separate from TeacherError because the correct response is different.
+    A 429 is counted against the allowance before it is rejected, so once
+    this fires every further attempt - a retry, or the next model in a
+    fallback chain - spends a request that cannot possibly succeed. It must
+    propagate past the retry loop, past the fallback chain, and out of the
+    verifier that otherwise swallows everything.
+    """
+
+
+# OpenRouter reports why it refused in the response body. Two 429s mean
+# opposite things: the account's own daily cap is spent (stop, come back
+# tomorrow) versus the shared :free pool for one model is saturated by other
+# users (try a different vendor, which the fallback chain does).
+_QUOTA_MARKERS = (
+    "free-models-per-day",
+    "free_models_per_day",
+    "daily limit",
+    "rate limit exceeded for free",
+    "add credits",
+    "requests per day",
+)
+
+
+def classify(code: int, body: bytes) -> tuple[str, str]:
+    """(kind, human message) for an HTTP error, read from the body.
+
+    kind is "quota", "upstream" or "other". The body is the only place the
+    distinction is recorded, which is why it must be read before the
+    exception is discarded.
+    """
+    text = (body or b"").decode("utf-8", "replace")
+    detail = text
+    try:
+        payload = json.loads(text)
+        err = payload.get("error") or {}
+        if isinstance(err, dict):
+            detail = str(err.get("message") or text)
+            meta = err.get("metadata") or {}
+            if isinstance(meta, dict) and meta.get("limit_source"):
+                detail = f"{detail} [limit_source={meta['limit_source']}]"
+    except (json.JSONDecodeError, AttributeError):
+        pass
+
+    low = detail.lower()
+    if code == 429:
+        if any(m in low for m in _QUOTA_MARKERS):
+            return "quota", detail
+        return "upstream", detail
+    return "other", detail
+
+
+def key_status(cfg: ApiConfig, api_key: str) -> dict[str, Any] | None:
+    """The account's current free-model allowance, or None if unreachable.
+
+    One cheap GET before a run beats discovering the cap is spent twenty
+    counted requests into it. This endpoint is not itself a model call and
+    does not draw on the allowance.
+    """
+    url = cfg.base_url.split("/chat/completions")[0] + "/auth/key"
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return (json.load(resp) or {}).get("data") or {}
+    except Exception:  # noqa: BLE001 - a preflight that fails must not stop the run
+        return None
+
+
 class RateLimiter:
     """Minimum spacing between calls, so a burst cannot trip a per-minute cap."""
 
@@ -70,6 +140,9 @@ class Client:
         self.completion_tokens = 0
         self.failures = 0
         self.fallback_used = 0
+        self.rate_limited = 0
+        self.quota_hit = False
+        self.last_detail = ""
 
     def complete(self, model: ModelConfig, prompt: str) -> str:
         """One completion. Raises TeacherError when retrying would be futile."""
@@ -86,17 +159,36 @@ class Client:
             "X-Title": self.cfg.title,
         }
 
+        # A 429 gets its own, smaller budget. Every attempt is counted
+        # against the daily allowance whether or not it returns anything, so
+        # four attempts into a saturated pool spends four requests to learn
+        # what the first one already said.
         last: Exception | None = None
-        for attempt in range(self.cfg.max_retries):
+        for attempt in range(max(1, self.cfg.max_retries)):
             self.limiter.wait()
             try:
                 req = urllib.request.Request(self.cfg.base_url, data=body, headers=headers)
                 with urllib.request.urlopen(req, timeout=self.cfg.timeout_s) as resp:
                     payload = json.load(resp)
             except urllib.error.HTTPError as exc:
-                last = exc
+                # Read the body before anything else. It is readable once,
+                # and it carries the only statement of why the request was
+                # refused; discarding it leaves "HTTP Error 429: Too Many
+                # Requests", which does not distinguish a spent allowance
+                # from a busy upstream pool.
+                kind, detail = classify(exc.code, exc.read())
+                self.last_detail = detail
+                last = TeacherError(f"HTTP {exc.code}: {detail[:300]}")
+
+                if kind == "quota":
+                    self.quota_hit = True
+                    raise QuotaExhausted(detail[:300]) from exc
                 if exc.code not in self.cfg.retry_status:
-                    raise TeacherError(f"HTTP {exc.code}: {exc.read()[:400]!r}") from exc
+                    raise TeacherError(f"HTTP {exc.code}: {detail[:300]}") from exc
+                if exc.code == 429:
+                    self.rate_limited += 1
+                    if attempt + 1 >= max(1, self.cfg.max_retries_rate_limited):
+                        break
                 self._backoff(attempt)
                 continue
             except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
@@ -136,6 +228,12 @@ class Client:
                 continue
             try:
                 return self.complete(dataclasses.replace(model, id=model_id), prompt), model_id
+            except QuotaExhausted:
+                # Not this model's fault and not fixable by trying another:
+                # the allowance is account-wide. Every further vendor in the
+                # chain would spend one more counted request to be told the
+                # same thing.
+                raise
             except TeacherError as exc:
                 last = exc
                 self.fallback_used += 1
@@ -152,6 +250,7 @@ class Client:
             "completion_tokens": self.completion_tokens,
             "failures": self.failures,
             "fallbacks_tried": self.fallback_used,
+            "rate_limited": self.rate_limited,
         }
 
 

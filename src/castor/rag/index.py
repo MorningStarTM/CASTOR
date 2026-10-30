@@ -124,6 +124,25 @@ class SymbolIndex:
         return None
 
 
+def _base_name(node: ast.AST) -> str:
+    """The dotted name of a base class expression.
+
+    ast.unparse would do this in one call but arrived in Python 3.9, and the
+    interpreter this runs under is not always the newest one on the machine.
+    Only the three forms a base class actually takes are handled; anything
+    stranger yields "" and is simply not recorded as a base, which costs one
+    inheritance edge rather than the whole index.
+    """
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent = _base_name(node.value)
+        return f"{parent}.{node.attr}" if parent else node.attr
+    if isinstance(node, ast.Subscript):      # Generic[T]
+        return _base_name(node.value)
+    return ""
+
+
 def _walk(body: list, prefix: str, index: SymbolIndex, cfg: IndexConfig) -> None:
     """Index a scope, carrying the enclosing class into each method's name.
 
@@ -135,13 +154,14 @@ def _walk(body: list, prefix: str, index: SymbolIndex, cfg: IndexConfig) -> None
     teacher is handed a definition for the wrong object and has no way to
     tell.
     """
+
     for node in body:
         if isinstance(node, ast.ClassDef):
             qualified = f"{prefix}.{node.name}"
             doc = ast.get_docstring(node)
             if doc:
                 index.add(qualified, clean(doc), cfg)
-            index.add_class(node.name, [ast.unparse(b) for b in node.bases])
+            index.add_class(node.name, [_base_name(b) for b in node.bases])
             for member in node.body:
                 if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     member_doc = ast.get_docstring(member)

@@ -58,6 +58,10 @@ class ApiConfig:
     requests_per_minute: int = 20
     timeout_s: float = 180.0
     max_retries: int = 4
+    # A 429 is counted against the free daily allowance before it is
+    # refused, so it gets a smaller budget than a timeout or a 503. Those
+    # are free to retry; a 429 is not.
+    max_retries_rate_limited: int = 2
     backoff_base_s: float = 5.0
     backoff_max_s: float = 60.0
     retry_status: list[int] = field(default_factory=lambda: [408, 429, 500, 502, 503, 504])

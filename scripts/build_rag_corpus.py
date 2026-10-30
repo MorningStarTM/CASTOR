@@ -144,6 +144,23 @@ def banner(cfg) -> None:
               f"{'every ' + str(every) + ' requests + at the end' if every else 'AT THE END ONLY'}")
     print(f"api key    {cfg.api.api_key_env}: "
           f"{'set (' + str(len(key)) + ' chars)' if key else 'MISSING'}")
+
+    # What the allowance actually is, before the run spends any of it. A 429
+    # is counted before it is refused, so discovering an exhausted cap by
+    # running into it costs real requests.
+    if key:
+        from castor.rag.client import key_status
+        status = key_status(cfg.api, key)
+        free = (status or {}).get("free_model_daily_requests") or {}
+        if free:
+            used, limit = free.get("used", "?"), free.get("limit", "?")
+            left = free.get("remaining", "?")
+            print(f"allowance  {left} of {limit} free requests left today "
+                  f"({used} used)"
+                  f"{'   <-- NOTHING LEFT, the run will stop immediately' if left == 0 else ''}")
+        elif status:
+            print(f"allowance  paid tier, ${status.get('usage', 0):.4f} used")
+
     for warning in cfg.validate():
         print(f"  warning: {warning}")
     print()

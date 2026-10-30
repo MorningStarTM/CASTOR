@@ -65,6 +65,10 @@ api:
   requests_per_minute: 20
   timeout_s: 180
   max_retries: 4
+  # A 429 is counted against the free daily allowance before it is refused,
+  # so retrying one spends a request that cannot succeed. Timeouts and 5xx
+  # keep the full budget above; a 429 gets this smaller one.
+  max_retries_rate_limited: 2
   backoff_base_s: 5.0
   backoff_max_s: 60.0
   retry_status: [408, 429, 500, 502, 503, 504]

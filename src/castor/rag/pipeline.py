@@ -30,7 +30,7 @@ from . import hub
 from . import index as index_stage
 from . import pages as pages_stage
 from . import verify as verify_stage
-from .client import Client, TeacherError
+from .client import Client, QuotaExhausted, TeacherError
 from .config import RagConfig
 from .schema import (
     FAIL_PARSE, PASS, UNCHECKED, Page, PageRecord, QARow, append_pages,
@@ -144,6 +144,11 @@ def run(cfg: RagConfig, templates: dict[str, str], limit: int | None = None,
         try:
             result = generate_stage.generate(
                 client, cfg.models.generator, items, cfg.generation, templates)
+        except QuotaExhausted as exc:
+            report(f"\nDAILY ALLOWANCE SPENT at {head.page.id}: {exc}")
+            report("  the corpus on disk is intact; rerun tomorrow and it "
+                   "resumes from the next unseen page")
+            break
         except TeacherError as exc:
             # A hard API error is the daily cap or a bad key. Stopping keeps
             # the partial corpus intact and resumable; carrying on would burn
@@ -159,9 +164,23 @@ def run(cfg: RagConfig, templates: dict[str, str], limit: int | None = None,
             ])
             continue
 
-        verdicts = verify_stage.verify(
-            client, cfg.models.verifier, result.pairs,
-            head.page.id, head.page.text, cfg.verification, templates)
+        # A spent allowance here must not discard the pairs: the generator
+        # was already paid for them. They are written unchecked and the loop
+        # stops, so --reverify can judge them later without regenerating.
+        spent = ""
+        try:
+            verdicts = verify_stage.verify(
+                client, cfg.models.verifier, result.pairs,
+                head.page.id, head.page.text, cfg.verification, templates)
+        except QuotaExhausted as exc:
+            spent = str(exc)
+            verdicts = [
+                verify_stage.Verdict(
+                    UNCHECKED,
+                    verify_stage.span_ok(p.support, head.page.text, cfg.verification),
+                    None, None, "daily allowance spent before verification")
+                for p in result.pairs
+            ]
 
         rows = [
             _to_row(number + n, raw, verdict, refs,
@@ -182,6 +201,12 @@ def run(cfg: RagConfig, templates: dict[str, str], limit: int | None = None,
                 n_fail=sum(1 for r in by_page.get(p.id, []) if r.verdict not in (PASS, UNCHECKED)),
             ) for p in group
         ])
+
+        if spent:
+            report(f"\nDAILY ALLOWANCE SPENT verifying {head.page.id}: {spent}")
+            report(f"  {len(rows)} rows written unchecked; "
+                   f"recover them with --reverify")
+            break
 
         if cfg.output.hf_repo and cfg.output.push_every and i % cfg.output.push_every == 0:
             hub.push(cfg, hub.quick_totals(cfg.output.corpus_path), partial=True,
