@@ -100,7 +100,8 @@ def _to_row(number: int, raw: generate_stage.RawPair, verdict: verify_stage.Verd
         refs=refs,
         source=raw.page.source,
         model=generator_id,
-        verifier=verifier_id if verdict.verdict != UNCHECKED else "",
+        # The model that actually judged, which may be a fallback.
+        verifier=verdict.model or (verifier_id if verdict.verdict != UNCHECKED else ""),
     )
 
 

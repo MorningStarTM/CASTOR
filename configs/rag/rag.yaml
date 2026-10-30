@@ -84,6 +84,16 @@ models:
     id: "google/gemma-4-31b-it:free"
     temperature: 0.0      # a judge should not be creative
     max_tokens: 8192
+    # Tried in order when the primary is rate-limited upstream. A :free
+    # endpoint is a pool shared with every other OpenRouter user, so a 429
+    # there is their traffic and not your quota, and it can persist for hours.
+    # Each fallback is a different vendor, so one pool saturating does not
+    # take the others with it. None is Gemma, which keeps the verifier a
+    # different family from the Nemotron generator.
+    fallbacks:
+      - "recursive/flint-v1.0:free"
+      - "cohere/north-mini-code:free"
+      - "xingchen-agi/xing4.0-29b-a4b:free"
 
 generation:
   max_pairs_per_page: 10

@@ -42,6 +42,11 @@ class Verdict:
     entailment: bool | None = None
     reasoning: bool | None = None
     reason: str = ""
+    # Which model actually judged this pair. Not the configured primary: when
+    # that one is rate-limited the chain falls through to another vendor, and
+    # a row claiming to have been judged by a model that never saw it would
+    # make the whole corpus unauditable.
+    model: str = ""
 
 
 def _normalise(text: str, enabled: bool) -> str:
@@ -89,17 +94,18 @@ def build_prompt(page_id: str, page_text: str, pairs: list[RawPair],
     )
 
 
-def _decide(span: bool, answer_ok: bool, reasoning_ok: bool, reason: str) -> Verdict:
+def _decide(span: bool, answer_ok: bool, reasoning_ok: bool, reason: str,
+            model: str = "") -> Verdict:
     if not span:
         return Verdict(FAIL_SPAN, span, answer_ok, reasoning_ok,
-                       reason or "quoted span not found on the page")
+                       reason or "quoted span not found on the page", model)
     if not answer_ok:
         return Verdict(FAIL_ENTAILMENT, span, answer_ok, reasoning_ok,
-                       reason or "answer not supported by the page")
+                       reason or "answer not supported by the page", model)
     if not reasoning_ok:
         return Verdict(FAIL_REASONING, span, answer_ok, reasoning_ok,
-                       reason or "a reasoning step is not supported by the page")
-    return Verdict(PASS, span, answer_ok, reasoning_ok, "")
+                       reason or "a reasoning step is not supported by the page", model)
+    return Verdict(PASS, span, answer_ok, reasoning_ok, "", model)
 
 
 def verify(client: Client, model: ModelConfig, pairs: list[RawPair],
@@ -118,14 +124,18 @@ def verify(client: Client, model: ModelConfig, pairs: list[RawPair],
         return [Verdict(UNCHECKED, s, None, None, "verification disabled") for s in spans]
 
     try:
-        reply = client.complete(model, build_prompt(page_id, page_text, pairs, templates))
+        reply, used = client.complete_any(
+            model, build_prompt(page_id, page_text, pairs, templates))
         payload = extract_json(reply)
     except Exception as exc:   # noqa: BLE001 - a judge failing must not stop the run
         return [Verdict(UNCHECKED, s, None, None, f"verifier unavailable: {type(exc).__name__}")
                 for s in spans]
 
     if payload is None:
-        return [Verdict(UNCHECKED, s, None, None, "verifier reply did not parse")
+        # Still record which model produced the unusable reply: a fallback
+        # that reliably cannot emit JSON should be visible in the corpus
+        # rather than hidden behind an anonymous "unchecked".
+        return [Verdict(UNCHECKED, s, None, None, "verifier reply did not parse", used)
                 for s in spans]
 
     by_index: dict[int, dict] = {}
@@ -140,10 +150,12 @@ def verify(client: Client, model: ModelConfig, pairs: list[RawPair],
     for i, span in enumerate(spans):
         item = by_index.get(i)
         if item is None:
-            out.append(Verdict(UNCHECKED, span, None, None, "verifier returned no verdict"))
+            out.append(Verdict(UNCHECKED, span, None, None,
+                               "verifier returned no verdict", used))
             continue
         answer_ok = bool(item.get("answer_supported", False))
         # An empty derivation has nothing to check, so it cannot fail.
         reasoning_ok = (not pairs[i].reasoning) or bool(item.get("reasoning_supported", False))
-        out.append(_decide(span, answer_ok, reasoning_ok, str(item.get("reason", "")).strip()))
+        out.append(_decide(span, answer_ok, reasoning_ok,
+                           str(item.get("reason", "")).strip(), used))
     return out

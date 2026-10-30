@@ -70,6 +70,11 @@ class ModelConfig:
     id: str = ""
     temperature: float = 0.3
     max_tokens: int = 8_192
+    # Tried in order when id is rate-limited upstream. A :free endpoint is a
+    # shared pool: saturation there is somebody else's traffic, not your
+    # quota, and waiting it out can take hours. A second model from a
+    # different provider is usually available immediately.
+    fallbacks: list[str] = field(default_factory=list)
 
 
 @dataclass

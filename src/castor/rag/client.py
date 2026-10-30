@@ -69,6 +69,7 @@ class Client:
         self.prompt_tokens = 0
         self.completion_tokens = 0
         self.failures = 0
+        self.fallback_used = 0
 
     def complete(self, model: ModelConfig, prompt: str) -> str:
         """One completion. Raises TeacherError when retrying would be futile."""
@@ -120,6 +121,27 @@ class Client:
         self.failures += 1
         raise TeacherError(f"giving up after {self.cfg.max_retries} attempts: {last}")
 
+    def complete_any(self, model: ModelConfig, prompt: str) -> tuple[str, str]:
+        """Try model.id, then each fallback. Returns (reply, model_used).
+
+        Raises only when every model in the chain fails, which is the only
+        case where there is nothing left to try.
+        """
+        import dataclasses
+
+        chain = [model.id, *model.fallbacks]
+        last: Exception | None = None
+        for model_id in chain:
+            if not model_id:
+                continue
+            try:
+                return self.complete(dataclasses.replace(model, id=model_id), prompt), model_id
+            except TeacherError as exc:
+                last = exc
+                self.fallback_used += 1
+                continue
+        raise TeacherError(f"all {len(chain)} model(s) failed, last: {last}")
+
     def _backoff(self, attempt: int) -> None:
         time.sleep(min(self.cfg.backoff_max_s, self.cfg.backoff_base_s * 2**attempt))
 
@@ -129,6 +151,7 @@ class Client:
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "failures": self.failures,
+            "fallbacks_tried": self.fallback_used,
         }
 
 
