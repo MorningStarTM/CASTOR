@@ -1,0 +1,119 @@
+# Prompt templates. Kept out of the code so a prompt can be changed, diffed and
+# blamed without touching a module.
+#
+# Placeholders are str.format fields. Available to each template:
+#   generate: n_pairs, page_id, page_text, references, depth_lookup,
+#             depth_single, depth_multi
+#   verify:   page_id, page_text, pairs_json
+
+generate: |
+  You are writing a training set that teaches a small language model the
+  grid2op power grid simulator. Below is one page of grid2op's own
+  documentation, followed by the definitions of every symbol that page refers
+  to.
+
+  Write at most {n_pairs} question-and-answer pairs about this page.
+
+  Grounding rules, in order of importance:
+  - Every answer must be supported by the page or by the referenced
+    definitions below. Do not use outside knowledge of power systems, and do
+    not state behaviour the text does not state.
+  - Each pair must quote a verbatim span from the page in "support". Copy it
+    exactly. Do not paraphrase it, do not shorten it to a few words, and never
+    invent a quote.
+  - A symbol marked EXTERNAL below is defined by another project. You may
+    mention it by name but must not describe what it does.
+
+  Reasoning:
+  - "reasoning" is the derivation from the quoted span to the answer. Every
+    step must follow from the page, the references, or an earlier step.
+  - For a plain lookup, where the answer is simply stated and no derivation
+    exists, set "reasoning" to an empty string. Do not manufacture a
+    derivation to fill the field.
+  - Set "reasoning_depth": 0 for a lookup, 1 for a single inference from a
+    definition, 2 or more for a derivation that chains several steps or spans
+    a referenced symbol.
+
+  Aim for roughly {depth_lookup:.0%} depth 0, {depth_single:.0%} depth 1 and
+  {depth_multi:.0%} depth 2 or more. The depth 2 pairs are the valuable ones;
+  they usually come from combining the page with one of its references.
+
+  Other rules:
+  - Questions must stand alone. Name the class, method or attribute, so a
+    reader who cannot see this page still understands what is asked.
+  - Vary the form: what something is, what it returns, what a value means,
+    when to use it, what goes wrong if it is misused.
+  - If the page is too thin to support {n_pairs} good pairs, write fewer.
+    Never pad.
+
+  Reply with JSON only. No prose before or after, no code fences:
+
+  {{"pairs": [
+    {{"question": "...",
+      "reasoning": "...",
+      "answer": "...",
+      "support": "...",
+      "grounding": "extractive",
+      "reasoning_depth": 1}}
+  ]}}
+
+  "grounding" is "extractive" when the answer is stated in the text, or
+  "generative" when you wrote it from understanding the text.
+
+  ===== PAGE: {page_id} =====
+  {page_text}
+  ===== END PAGE =====
+
+  ===== REFERENCED DEFINITIONS =====
+  {references}
+  ===== END REFERENCES =====
+
+verify: |
+  You are checking question-and-answer pairs written by another model against
+  the source page they claim to come from. You can see the page and the pairs.
+  You cannot see how they were produced, and you should not assume they are
+  correct.
+
+  Judge each pair on two things, separately:
+
+  1. answer_supported - is the answer supported by the page below? An answer
+     that is true of power systems in general but not stated on this page is
+     NOT supported.
+  2. reasoning_supported - does every step of the reasoning follow from the
+     page or from an earlier step? If "reasoning" is an empty string, there is
+     no derivation to check: set this to true.
+
+  A correct answer reached by an unsupported step fails on reasoning even
+  though it passes on the answer. Report that honestly; it is the case this
+  check exists for.
+
+  Reply with JSON only, no prose, no code fences. One verdict per pair, in the
+  same order, with "index" matching the pair's position starting at 0:
+
+  {{"verdicts": [
+    {{"index": 0, "answer_supported": true, "reasoning_supported": true,
+      "reason": ""}}
+  ]}}
+
+  "reason" is an empty string when both are true, otherwise one short clause
+  naming what is unsupported.
+
+  ===== PAGE: {page_id} =====
+  {page_text}
+  ===== END PAGE =====
+
+  ===== PAIRS TO JUDGE =====
+  {pairs_json}
+  ===== END PAIRS =====
+
+# Rendered into the generate template's {references} slot, one per reference.
+reference_entry: |
+  --- {name} ---
+  {text}
+
+reference_external: |
+  --- {name} --- EXTERNAL: defined by another project, not by grid2op.
+  Do not describe what it does.
+
+reference_none: |
+  (this page refers to no other documented symbol)

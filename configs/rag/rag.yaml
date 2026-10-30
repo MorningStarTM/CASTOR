@@ -1,0 +1,135 @@
+# Phase 2 QA corpus: pagination, retrieval, generation, verification.
+#
+# Nothing in castor.rag reads a literal that is not in this file or in
+# prompts.yaml. Changing the teacher, the page budget, the pair ceiling or the
+# forbidden environments is an edit here, never an edit to the code.
+
+source:
+  # null means locate the installed grid2op package at run time. Set a path to
+  # read a checkout instead.
+  package: null
+  # Optional Sphinx docs/ directory for the narrative pages. Those are not in
+  # the installed package and need a repository clone.
+  rst_dir: null
+  exclude_path_substrings: ["test"]
+
+pages:
+  # A page is one class with its own methods. A class above max_chars splits
+  # into numbered parts; a page below min_chars is dropped as too thin to
+  # support a question that is not padding.
+  max_chars: 24000
+  min_chars: 120
+  # Pages shorter than this share a request with their neighbours. 0 means
+  # strict one page per request, which is the default and the better default.
+  bundle_under: 0
+  bundle_max_chars: 40000
+  skip_internal: true
+  internal_markers:
+    - "internal class"
+    - "use at your own risk"
+    - "only if you want to code"
+    - "do not use this"
+    - "deprecated"
+
+index:
+  # Symbol index for cross-reference resolution. Exact-name lookup, built
+  # offline. No embeddings: a cross-reference is an exact name, so similarity
+  # search would be a worse way to answer an exact question.
+  include_bare_names: true
+  include_short_qualified: true
+  min_doc_chars: 40
+  # Several grid2op classes define a method of the same name. Reducing a
+  # qualified reference like Environment.step to bare "step" hands the teacher
+  # whichever step was indexed first, which is a confident definition for the
+  # wrong object. Missing beats guessing, so this stays off.
+  bare_fallback_for_qualified: false
+
+augment:
+  # Sphinx role markup: :class:`grid2op.Action.BaseAction` -> the name inside.
+  role_pattern: ':[a-z:]+:`~?([^`<]+?)(?:\s*<[^>]+>)?`'
+  max_refs_per_page: 12
+  max_chars_per_ref: 1200
+  max_total_ref_chars: 10000
+  # A name under one of these prefixes belongs to another project. It is
+  # labelled external in the prompt rather than silently dropped, so the
+  # teacher is told not to invent it.
+  external_prefixes: ["numpy", "np", "pandas", "pd", "scipy", "matplotlib", "torch"]
+
+api:
+  base_url: "https://openrouter.ai/api/v1/chat/completions"
+  api_key_env: "OPENROUTER_API_KEY"
+  # Read from this file when the variable is not already in the environment.
+  # Searched upwards from the working directory, so the script runs from
+  # anywhere in the repo. An exported variable always wins over the file.
+  env_file: ".env"
+  requests_per_minute: 20
+  timeout_s: 180
+  max_retries: 4
+  backoff_base_s: 5.0
+  backoff_max_s: 60.0
+  retry_status: [408, 429, 500, 502, 503, 504]
+  referer: "https://github.com/MorningStarTM/CASTOR"
+  title: "CASTOR"
+
+models:
+  # The generator writes the pairs. The verifier judges them. They must be
+  # different families: a model asked to check its own output agrees with
+  # itself, and the entailment check only means something if the verifier can
+  # fail in different ways than the generator did.
+  generator:
+    id: "nvidia/nemotron-3-ultra-550b-a55b:free"
+    temperature: 0.4
+    max_tokens: 16384
+  verifier:
+    id: "google/gemma-4-31b-it:free"
+    temperature: 0.0      # a judge should not be creative
+    max_tokens: 8192
+
+generation:
+  max_pairs_per_page: 10
+  # Shares the generator is asked to aim for. Enforced by instruction, not by
+  # construction, so the realised mix is reported rather than assumed.
+  depth_targets:
+    lookup: 0.35          # depth 0
+    single: 0.40          # depth 1
+    multi: 0.25           # depth 2+
+
+verification:
+  enabled: true
+  # The span check normalises whitespace before comparing, then falls back to
+  # a longest-common-substring ratio so a trimmed quote is not failed for a
+  # missing article.
+  normalise_whitespace: true
+  span_min_ratio: 0.90
+
+dedup:
+  enabled: true
+  shingle_size: 4
+  num_permutations: 64
+  jaccard_threshold: 0.80
+
+audit:
+  # Environments the corpus must never mention. A held-out grid named here
+  # reaches the student through the text channel and every transfer number in
+  # the paper becomes unsupportable. Empty until the split is decided, and the
+  # pipeline warns loudly when it is empty.
+  held_out_environments: []
+  extra_forbidden_terms: []
+  fail_on_violation: true
+
+executed:
+  # Simulator-grounded pairs. Correct by construction, no teacher involved.
+  enabled: true
+  environment: "l2rpn_wcci_2022"
+
+output:
+  dir: "data/rag"
+  corpus_file: "grid2op_qa.jsonl"
+  pages_file: "pages.jsonl"
+  hf_repo: null
+  hf_private: true
+  # Upload the partial corpus every N generate requests, as well as at the
+  # end. A Kaggle session's disk dies with the session, so a run that pushes
+  # only on completion loses everything if it is killed at the 12 hour wall.
+  # 0 disables intermediate pushes.
+  push_every: 20
