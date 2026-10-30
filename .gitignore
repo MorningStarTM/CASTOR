@@ -230,3 +230,9 @@ docs/
 papers/
 notebooks/
 logs/
+# Editor
+.vscode/
+
+# Generated corpora
+data/rag/
+data/rag_test/
