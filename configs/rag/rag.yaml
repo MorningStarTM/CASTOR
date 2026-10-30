@@ -90,10 +90,13 @@ models:
     # Each fallback is a different vendor, so one pool saturating does not
     # take the others with it. None is Gemma, which keeps the verifier a
     # different family from the Nemotron generator.
+    # Ordered by what actually answered when probed, not by model size.
+    # cohere and flint both returned clean JSON; the others were 429-ing on
+    # their shared upstream pools at the time of testing.
     fallbacks:
-      - "recursive/flint-v1.0:free"
       - "cohere/north-mini-code:free"
-      - "xingchen-agi/xing4.0-29b-a4b:free"
+      - "recursive/flint-v1.0:free"
+      - "google/gemma-4-26b-a4b-it:free"
 
 generation:
   max_pairs_per_page: 10

@@ -232,3 +232,79 @@ def finalise(cfg: RagConfig, report: Reporter = print) -> dict:
 
     audit_stage.enforce(audited, cfg.audit)
     return totals
+
+
+def reverify(cfg: RagConfig, templates: dict[str, str], limit: int | None = None,
+             report: Reporter = print) -> dict:
+    """Re-run stage 5 over rows left unchecked, without regenerating them.
+
+    An unchecked row is not a wrong row. Its question, reasoning, answer and
+    support span are all intact; only the judge was unreachable, usually
+    because a :free pool was saturated at that moment. Regenerating it would
+    pay the generator again for work already done and throw away a pair that
+    may well be fine.
+
+    So this re-reads the corpus, rebuilds the pages the unchecked rows came
+    from, and asks the verifier again. One request per page instead of two,
+    and it can run days later when the pools are quiet.
+    """
+    rows = list(read_rows(cfg.output.corpus_path))
+    if not rows:
+        report("nothing to re-verify")
+        return {}
+
+    stale = [r for r in rows if r.verdict == UNCHECKED]
+    if not stale:
+        report("no unchecked rows")
+        return summarise(cfg.output.corpus_path)
+
+    by_page: dict[str, list[QARow]] = {}
+    for row in stale:
+        by_page.setdefault(row.page, []).append(row)
+    report(f"{len(stale):,} unchecked rows across {len(by_page):,} pages")
+
+    pages = {p.id: p for p in pages_stage.build(cfg.pages, cfg.source)}
+    client = Client(cfg.api)
+    index = {r.id: r for r in rows}
+    targets = list(by_page.items())[:limit] if limit else list(by_page.items())
+
+    recovered = 0
+    for i, (page_id, page_rows) in enumerate(targets, 1):
+        page = pages.get(page_id)
+        if page is None:
+            # Pagination is deterministic, so a missing page means the source
+            # package changed since the row was written. Judging against a
+            # page the row did not come from would be worse than leaving it.
+            report(f"  skip {page_id}: no longer produced by pagination")
+            continue
+
+        pairs = [generate_stage.RawPair(
+            question=r.question, reasoning=r.reasoning, answer=r.answer,
+            support=r.support, grounding=r.grounding,
+            reasoning_depth=r.reasoning_depth, page=page) for r in page_rows]
+
+        verdicts = verify_stage.verify(client, cfg.models.verifier, pairs,
+                                       page.id, page.text, cfg.verification, templates)
+        for row, verdict in zip(page_rows, verdicts):
+            if verdict.verdict == UNCHECKED:
+                continue
+            row.verdict = verdict.verdict
+            row.checks = {"span": verdict.span, "entailment": verdict.entailment,
+                          "reasoning": verdict.reasoning, "execution": None}
+            row.reason = verdict.reason
+            row.verifier = verdict.model or cfg.models.verifier.id
+            index[row.id] = row
+            recovered += 1
+
+        if i % 5 == 0 or i == len(targets):
+            report(f"[{i:>4}/{len(targets)}] {recovered:,} rows now judged")
+
+    path = Path(cfg.output.corpus_path)
+    tmp = path.with_suffix(".tmp")
+    tmp.unlink(missing_ok=True)
+    append_rows(tmp, [index[r.id] for r in rows])
+    tmp.replace(path)
+
+    report(f"\nrecovered {recovered:,} of {len(stale):,} unchecked rows")
+    report(f"teacher: {client.stats()}")
+    return finalise(cfg, report)
