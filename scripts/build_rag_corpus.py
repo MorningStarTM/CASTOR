@@ -57,6 +57,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-executed", action="store_true",
                    help="skip the simulator-grounded rows. The teacher path needs only "
                         "the grid2op source, so this avoids downloading an environment")
+    p.add_argument("--reverify", action="store_true",
+                   help="re-run verification over rows left unchecked, without "
+                        "regenerating them. One request per page, not two")
     p.add_argument("--finalise-only", action="store_true",
                    help="re-run dedup and the leak audit over the corpus on disk")
 
@@ -165,6 +168,14 @@ def main() -> int:
     apply_overrides(cfg, args)
     load_env(cfg)
     banner(cfg)
+
+    if args.reverify:
+        try:
+            pipeline.reverify(cfg, templates, limit=args.limit)
+        except LeakError as exc:
+            print(f"\nLEAK AUDIT FAILED\n{exc}")
+            return 2
+        return 0
 
     if args.finalise_only:
         try:
