@@ -99,7 +99,7 @@ models:
       - "google/gemma-4-26b-a4b-it:free"
 
 generation:
-  max_pairs_per_page: 10
+  max_pairs_per_page: 40
   # Shares the generator is asked to aim for. Enforced by instruction, not by
   # construction, so the realised mix is reported rather than assumed.
   depth_targets:
