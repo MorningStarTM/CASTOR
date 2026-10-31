@@ -172,8 +172,21 @@ def read_rows(path: str | Path) -> Iterator[QARow]:
                 continue
 
 
-def done_pages(path: str | Path) -> set[str]:
-    """Page ids already written, so a resumed run does not pay for them twice."""
+# A page recorded with no pairs failed for one of two reasons, and they need
+# opposite treatment. A reply that would not parse is a transient fault or a
+# defect on this side, so the page is worth another request once that is
+# fixed. A reply that parsed and carried nothing usable means the page is too
+# thin to ask about, which no amount of retrying changes.
+_RETRYABLE_NOTE = "did not contain parseable JSON"
+
+
+def done_pages(path: str | Path, retry_failed: bool = False) -> set[str]:
+    """Page ids already written, so a resumed run does not pay for them twice.
+
+    With retry_failed, a page whose reply would not parse is left out, so the
+    next run attempts it again. Without it such a page counts as done, which
+    is why a parse defect once marked eight pages permanently finished.
+    """
     path = Path(path)
     if not path.exists():
         return set()
@@ -181,9 +194,15 @@ def done_pages(path: str | Path) -> set[str]:
     with path.open(encoding="utf-8") as handle:
         for line in handle:
             try:
-                done.add(json.loads(line)["id"])
+                record = json.loads(line)
+                page_id = record["id"]
             except (json.JSONDecodeError, KeyError):
                 continue
+            if (retry_failed
+                    and not record.get("n_pairs")
+                    and _RETRYABLE_NOTE in str(record.get("note", ""))):
+                continue
+            done.add(page_id)
     return done
 
 

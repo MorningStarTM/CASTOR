@@ -60,6 +60,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--reverify", action="store_true",
                    help="re-run verification over rows left unchecked, without "
                         "regenerating them. One request per page, not two")
+    p.add_argument("--retry-failed", action="store_true",
+                   help="re-attempt pages whose reply would not parse. Pages that "
+                        "parsed but had nothing usable stay done: those are thin, "
+                        "not broken")
     p.add_argument("--finalise-only", action="store_true",
                    help="re-run dedup and the leak audit over the corpus on disk")
 
@@ -203,7 +207,7 @@ def main() -> int:
         return 0
 
     if args.dry_run:
-        the_plan = pipeline.plan(cfg)
+        the_plan = pipeline.plan(cfg, retry_failed=args.retry_failed)
         report_budget(the_plan, cfg, args.per_day)
         if the_plan.pending:
             sample = the_plan.pending[0][0]
@@ -226,7 +230,8 @@ def main() -> int:
         return 0
 
     try:
-        totals = pipeline.run(cfg, templates, limit=args.limit)
+        totals = pipeline.run(cfg, templates, limit=args.limit,
+                              retry_failed=args.retry_failed)
     except LeakError as exc:
         print(f"\nLEAK AUDIT FAILED\n{exc}")
         return 2

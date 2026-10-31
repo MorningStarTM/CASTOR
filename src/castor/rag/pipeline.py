@@ -60,7 +60,8 @@ class Plan:
         return self.n_requests(verify) / max(1, per_day)
 
 
-def plan(cfg: RagConfig, report: Reporter = print) -> Plan:
+def plan(cfg: RagConfig, report: Reporter = print,
+         retry_failed: bool = False) -> Plan:
     """Stages 1 and 2, plus whatever a resume has already done. No API calls."""
     root = pages_stage.locate_package(cfg.source.package)
     all_pages = pages_stage.build(cfg.pages, cfg.source)
@@ -70,7 +71,7 @@ def plan(cfg: RagConfig, report: Reporter = print) -> Plan:
     report(f"stage 2  {symbol_index.n_symbols:,} symbols indexed")
 
     groups = pages_stage.bundle(all_pages, cfg.pages)
-    done = done_pages(cfg.output.pages_path)
+    done = done_pages(cfg.output.pages_path, retry_failed)
     pending = [g for g in groups if not all(p.id in done for p in g)]
     if done:
         report(f"resume   {len(done):,} pages already done, {len(pending):,} requests left")
@@ -106,9 +107,9 @@ def _to_row(number: int, raw: generate_stage.RawPair, verdict: verify_stage.Verd
 
 
 def run(cfg: RagConfig, templates: dict[str, str], limit: int | None = None,
-        report: Reporter = print) -> dict:
+        report: Reporter = print, retry_failed: bool = False) -> dict:
     """Stages 1 to 5 over every pending request, then 6 and 7 over the corpus."""
-    the_plan = plan(cfg, report)
+    the_plan = plan(cfg, report, retry_failed)
     root = pages_stage.locate_package(cfg.source.package)
     symbol_index = index_stage.build(cfg.index, cfg.source, root)
 
