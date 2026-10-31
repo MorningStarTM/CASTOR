@@ -159,6 +159,16 @@ class OutputConfig:
     def pages_path(self) -> Path:
         return Path(self.dir) / self.pages_file
 
+    @property
+    def rejects_dir(self) -> Path:
+        """Where a reply that would not parse is kept.
+
+        Without this the only record of a parse failure is the counter, which
+        says how often it happened and nothing about why. One file per failed
+        page costs nothing and makes the cause readable.
+        """
+        return Path(self.dir) / "rejected"
+
 
 @dataclass
 class RagConfig:

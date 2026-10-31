@@ -158,6 +158,15 @@ def run(cfg: RagConfig, templates: dict[str, str], limit: int | None = None,
 
         if not result.parsed:
             failed += 1
+            if result.raw:
+                try:
+                    cfg.output.rejects_dir.mkdir(parents=True, exist_ok=True)
+                    safe = head.page.id.replace("/", "_").replace("\\", "_")
+                    header = f"# {result.note}\n# page {head.page.id}\n\n"
+                    (cfg.output.rejects_dir / f"{safe}.txt").write_text(
+                        header + result.raw, encoding="utf-8")
+                except OSError:
+                    pass  # a diagnostic that cannot be written must not stop a run
             append_pages(cfg.output.pages_path, [
                 PageRecord(id=p.id, chars=p.chars, refs=refs, note=result.note)
                 for p in group

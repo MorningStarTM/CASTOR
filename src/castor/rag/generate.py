@@ -40,6 +40,9 @@ class GenerateResult:
     pairs: list[RawPair] = field(default_factory=list)
     parsed: bool = True
     note: str = ""
+    # The reply as it arrived, kept only when parsing failed, so the cause
+    # can be read rather than inferred from a counter.
+    raw: str = ""
 
 
 def build_prompt(items: list[Augmented], cfg: GenerationConfig,
@@ -130,8 +133,10 @@ def generate(client: Client, model: ModelConfig, items: list[Augmented],
     reply = client.complete(model, prompt)
     payload = extract_json(reply)
     if payload is None:
-        return GenerateResult(parsed=False, note="reply did not contain parseable JSON")
+        return GenerateResult(parsed=False, raw=reply,
+                              note="reply did not contain parseable JSON")
     pairs = parse(payload, items, cfg)
     if not pairs:
-        return GenerateResult(parsed=False, note="reply parsed but carried no usable pairs")
+        return GenerateResult(parsed=False, raw=reply,
+                              note="reply parsed but carried no usable pairs")
     return GenerateResult(pairs=pairs)

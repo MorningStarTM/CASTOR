@@ -254,29 +254,82 @@ class Client:
         }
 
 
-_JSON_BLOCK = re.compile(r"\{.*\}", re.DOTALL)
 _FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.MULTILINE)
+# A reasoning model emits its working before its answer. Those blocks quote
+# the schema they were given, so they contain braces, and a scan that starts
+# at the first brace in the reply starts inside the model's notes.
+_THINK = re.compile(
+    r"<(think|thinking|reasoning|scratchpad)>.*?</>", re.DOTALL | re.IGNORECASE)
+# An unterminated block: the reply ran out of tokens mid-thought.
+_THINK_OPEN = re.compile(r"<(think|thinking|reasoning|scratchpad)>.*\Z",
+                         re.DOTALL | re.IGNORECASE)
+_TRAILING_COMMA = re.compile(r",(\s*[}\]])")
+BACKREF = "\\" + "1"
+
+
+def _candidates(text: str) -> list[str]:
+    """Every balanced {...} span in the text, longest first.
+
+    The previous implementation used one greedy regex from the first brace to
+    the last, which is a single span that is only correct when the reply
+    contains nothing else. Braces are tracked here with a depth counter that
+    ignores anything inside a string literal, so a brace in prose, in a
+    reasoning trace, or inside a quoted span cannot shift the boundary.
+    """
+    out: list[str] = []
+    starts: list[int] = []
+    in_string = escaped = False
+    for i, ch in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            starts.append(i)
+        elif ch == "}" and starts:
+            out.append(text[starts.pop():i + 1])
+    return sorted(out, key=len, reverse=True)
 
 
 def extract_json(reply: str) -> dict[str, Any] | None:
     """Pull a JSON object out of a model reply, or None.
 
-    Instruction-tuned models wrap JSON in fences and prepend a sentence of
-    preamble however firmly they are told not to, so the outermost
-    brace-delimited span is taken rather than the whole reply. A reply that
-    still will not parse returns None: one lost page is cheap, and a
-    half-parsed object would be a silent defect in the dataset.
+    Tried in order: the reply as given, with code fences removed, and with
+    trailing commas removed. Each pass takes balanced brace spans longest
+    first, and a span is accepted only if it parses to a dict. The reasoning
+    blocks go first, because their contents are the model thinking about the
+    schema rather than answering in it.
     """
     if not reply:
         return None
-    for candidate in (reply, _FENCE.sub("", reply)):
-        match = _JSON_BLOCK.search(candidate)
-        if not match:
-            continue
-        try:
-            payload = json.loads(match.group(0))
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict):
-            return payload
-    return None
+
+    stripped = _THINK.sub(" ", reply)
+    stripped = _THINK_OPEN.sub(" ", stripped)
+
+    seen: set[str] = set()
+    fallback: dict[str, Any] | None = None
+    for text in (stripped, _FENCE.sub("", stripped), reply):
+        for candidate in _candidates(text):
+            for attempt in (candidate, _TRAILING_COMMA.sub(BACKREF, candidate)):
+                if attempt in seen:
+                    continue
+                seen.add(attempt)
+                try:
+                    payload = json.loads(attempt)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                if payload.keys() & {"pairs", "verdicts"}:
+                    return payload
+                # A dict without a known envelope key is probably one pair
+                # lifted out of a truncated reply. Keep it only if nothing
+                # better turns up.
+                fallback = fallback or payload
+    return fallback
