@@ -259,22 +259,31 @@ _FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.MULTILINE)
 # the schema they were given, so they contain braces, and a scan that starts
 # at the first brace in the reply starts inside the model's notes.
 _THINK = re.compile(
-    r"<(think|thinking|reasoning|scratchpad)>.*?</>", re.DOTALL | re.IGNORECASE)
-# An unterminated block: the reply ran out of tokens mid-thought.
-_THINK_OPEN = re.compile(r"<(think|thinking|reasoning|scratchpad)>.*\Z",
-                         re.DOTALL | re.IGNORECASE)
+    r"<(think|thinking|reasoning|scratchpad)>.*?</\1>", re.DOTALL | re.IGNORECASE)
+# An unterminated block: the reply ran out of tokens mid-thought. Stripping to
+# the end of the string would take the answer with it when the tag was closed
+# in a form the pattern above missed, so this runs only if no closing tag
+# appears anywhere after it.
+_THINK_OPEN = re.compile(r"<(think|thinking|reasoning|scratchpad)>(?![\s\S]*</\1>)[\s\S]*\Z",
+                         re.IGNORECASE)
 _TRAILING_COMMA = re.compile(r",(\s*[}\]])")
 BACKREF = "\\" + "1"
 
+# A salvaged object is accepted as a pair or a verdict only if it carries the
+# fields that make it one. Without this test the scan would also collect the
+# model's schema example and any nested object it happened to quote.
+_PAIR_FIELDS = ("question", "answer")
+_VERDICT_FIELDS = ("index",)
 
-def _candidates(text: str) -> list[str]:
-    """Every balanced {...} span in the text, longest first.
 
-    The previous implementation used one greedy regex from the first brace to
-    the last, which is a single span that is only correct when the reply
-    contains nothing else. Braces are tracked here with a depth counter that
-    ignores anything inside a string literal, so a brace in prose, in a
-    reasoning trace, or inside a quoted span cannot shift the boundary.
+def _spans(text: str) -> list[str]:
+    """Every balanced {...} span, in the order it appears.
+
+    The earlier implementation used one greedy regex from the first brace to
+    the last, which is correct only when the reply contains nothing else.
+    Braces are tracked here with a depth counter that ignores anything inside
+    a string literal, so a brace in prose, in a reasoning trace, or inside a
+    quoted span cannot shift the boundary.
     """
     out: list[str] = []
     starts: list[int] = []
@@ -294,42 +303,79 @@ def _candidates(text: str) -> list[str]:
             starts.append(i)
         elif ch == "}" and starts:
             out.append(text[starts.pop():i + 1])
-    return sorted(out, key=len, reverse=True)
+    return out
+
+
+def _loads(span: str) -> Any:
+    """json.loads, retried once with trailing commas removed."""
+    for attempt in (span, _TRAILING_COMMA.sub(BACKREF, span)):
+        try:
+            return json.loads(attempt)
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+def _salvage(text: str) -> dict[str, Any] | None:
+    """Rebuild an envelope from the complete objects of a truncated reply.
+
+    A reply cut off at max_tokens has no closing brace, so the envelope can
+    never parse, but the objects written before the cut are complete and
+    valid. Discarding them throws away a whole page of work over its last,
+    unfinished item: a forty-pair request that stopped at pair thirty-three
+    still contains thirty-three usable pairs.
+
+    Document order is kept, because the pairs were written in the order the
+    generator chose and a verdict's index refers to its position.
+    """
+    pairs: list[dict] = []
+    verdicts: list[dict] = []
+    seen: set[str] = set()
+    for span in _spans(text):
+        if span in seen:
+            continue
+        seen.add(span)
+        obj = _loads(span)
+        if not isinstance(obj, dict):
+            continue
+        if all(k in obj for k in _PAIR_FIELDS):
+            pairs.append(obj)
+        elif all(k in obj for k in _VERDICT_FIELDS):
+            verdicts.append(obj)
+    if pairs:
+        return {"pairs": pairs, "truncated": True}
+    if verdicts:
+        return {"verdicts": verdicts, "truncated": True}
+    return None
 
 
 def extract_json(reply: str) -> dict[str, Any] | None:
     """Pull a JSON object out of a model reply, or None.
 
-    Tried in order: the reply as given, with code fences removed, and with
-    trailing commas removed. Each pass takes balanced brace spans longest
-    first, and a span is accepted only if it parses to a dict. The reasoning
-    blocks go first, because their contents are the model thinking about the
-    schema rather than answering in it.
+    Three passes, each cheaper to trust than the next. First a balanced span
+    that parses to a dict carrying a known envelope key, which is the normal
+    case. Then the same over the raw reply, in case stripping removed too
+    much. Finally the complete objects of a truncated reply, reassembled into
+    an envelope and marked as such.
     """
     if not reply:
         return None
 
-    stripped = _THINK.sub(" ", reply)
-    stripped = _THINK_OPEN.sub(" ", stripped)
+    stripped = _THINK_OPEN.sub(" ", _THINK.sub(" ", reply))
+    views = (stripped, _FENCE.sub("", stripped), reply)
 
     seen: set[str] = set()
-    fallback: dict[str, Any] | None = None
-    for text in (stripped, _FENCE.sub("", stripped), reply):
-        for candidate in _candidates(text):
-            for attempt in (candidate, _TRAILING_COMMA.sub(BACKREF, candidate)):
-                if attempt in seen:
-                    continue
-                seen.add(attempt)
-                try:
-                    payload = json.loads(attempt)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(payload, dict):
-                    continue
-                if payload.keys() & {"pairs", "verdicts"}:
-                    return payload
-                # A dict without a known envelope key is probably one pair
-                # lifted out of a truncated reply. Keep it only if nothing
-                # better turns up.
-                fallback = fallback or payload
-    return fallback
+    for text in views:
+        for span in sorted(_spans(text), key=len, reverse=True):
+            if span in seen:
+                continue
+            seen.add(span)
+            payload = _loads(span)
+            if isinstance(payload, dict) and payload.keys() & {"pairs", "verdicts"}:
+                return payload
+
+    for text in views:
+        salvaged = _salvage(text)
+        if salvaged:
+            return salvaged
+    return None

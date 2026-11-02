@@ -103,7 +103,11 @@ models:
       - "google/gemma-4-26b-a4b-it:free"
 
 generation:
-  max_pairs_per_page: 40
+  # Forty pairs of question, derivation, answer and verbatim span overran the
+  # generator's 16k reply budget, and a reply cut off mid-object used to cost
+  # the whole page. Truncated replies are now salvaged, but staying under the
+  # ceiling is better than recovering from it.
+  max_pairs_per_page: 25
   # Shares the generator is asked to aim for. Enforced by instruction, not by
   # construction, so the realised mix is reported rather than assumed.
   depth_targets:
@@ -118,6 +122,11 @@ verification:
   # missing article.
   normalise_whitespace: true
   span_min_ratio: 0.90
+  # Pairs per judging request. The four largest pages of a trial run produced
+  # 158 rows and every one came back unchecked: the whole page plus forty
+  # items to rule on is more than a :free endpoint will answer. Smaller
+  # requests cost more of them, on exactly the pages worth the most.
+  max_pairs_per_request: 10
 
 dedup:
   enabled: true

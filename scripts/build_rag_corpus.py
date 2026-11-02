@@ -171,15 +171,31 @@ def banner(cfg) -> None:
 
 
 def report_budget(the_plan, cfg, per_day: int) -> None:
+    """What the run would cost in requests.
+
+    Generation is one request per page, so it is exact. Verification is one
+    request per chunk of pairs, and how many pairs a page yields is unknown
+    until it has been generated, so that side is a range: one request for a
+    page that filled a single chunk, up to the ceiling for a page that hit
+    max_pairs_per_page.
+    """
     verify = cfg.verification.enabled
-    print(f"\nrequests   {the_plan.n_generate:,} generate"
-          f"{f' + {the_plan.n_generate:,} verify' if verify else ''}"
-          f" = {the_plan.n_requests(verify):,}")
+    gen = the_plan.n_generate
+    chunks = -(-cfg.generation.max_pairs_per_page
+               // max(1, cfg.verification.max_pairs_per_request))
+    if verify:
+        print(f"\nrequests   {gen:,} generate")
+        print(f"           {gen:,} to {gen * chunks:,} verify, at "
+              f"{cfg.verification.max_pairs_per_request} pairs per request "
+              f"({chunks} chunks for a full page)")
+        print(f"           {gen * 2:,} to {gen * (1 + chunks):,} total")
+        print(f"days       {gen * 2 / max(1, per_day):.1f} to "
+              f"{gen * (1 + chunks) / max(1, per_day):.1f} at {per_day}/day")
+    else:
+        print(f"\nrequests   {gen:,} generate, no verification")
+        print(f"days       {gen / max(1, per_day):.1f} at {per_day}/day")
     print(f"ceiling    {len(the_plan.pages) * cfg.generation.max_pairs_per_page:,} pairs "
           f"({cfg.generation.max_pairs_per_page} x {len(the_plan.pages):,} pages)")
-    print(f"days       {the_plan.days(verify, per_day):.1f} at {per_day}/day, "
-          f"{the_plan.n_requests(verify) / max(1, cfg.api.requests_per_minute) / 60:.1f} h "
-          f"at {cfg.api.requests_per_minute} rpm")
 
 
 def main() -> int:

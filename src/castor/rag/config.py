@@ -115,6 +115,10 @@ class VerificationConfig:
     enabled: bool = True
     normalise_whitespace: bool = True
     span_min_ratio: float = 0.90
+    # How many pairs one judging request may carry. A whole large page plus
+    # forty items to rule on is a prompt the free endpoints do not answer, so
+    # the rows from the richest pages all came back unchecked.
+    max_pairs_per_request: int = 10
 
 
 @dataclass

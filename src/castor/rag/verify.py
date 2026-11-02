@@ -108,41 +108,18 @@ def _decide(span: bool, answer_ok: bool, reasoning_ok: bool, reason: str,
     return Verdict(PASS, span, answer_ok, reasoning_ok, "", model)
 
 
-def verify(client: Client, model: ModelConfig, pairs: list[RawPair],
-           page_id: str, page_text: str, cfg: VerificationConfig,
-           templates: dict[str, str]) -> list[Verdict]:
-    """A verdict per pair, in the order given.
-
-    Never raises on a verifier failure. If the judge cannot be reached or its
-    reply will not parse, the span check still stands and the rest is recorded
-    as unchecked, which is honest. Discarding the pairs would throw away work
-    the generator was already paid for.
-    """
-    spans = [span_ok(p.support, p.page.text or page_text, cfg) for p in pairs]
-
-    if not cfg.enabled:
-        return [Verdict(UNCHECKED, s, None, None, "verification disabled") for s in spans]
-
-    try:
-        reply, used = client.complete_any(
-            model, build_prompt(page_id, page_text, pairs, templates))
-        payload = extract_json(reply)
-    except QuotaExhausted:
-        # The one failure this function must not absorb. Marking the rows
-        # unchecked and returning would let the caller walk to the next page
-        # and spend the whole fallback chain again on an allowance that is
-        # already gone, which is how a run reaches page 6 of 244.
-        raise
-    except Exception as exc:   # noqa: BLE001 - a judge failing must not stop the run
-        return [Verdict(UNCHECKED, s, None, None, f"verifier unavailable: {type(exc).__name__}")
-                for s in spans]
-
+def _judge_chunk(client: Client, model: ModelConfig, chunk: list[RawPair],
+                 page_id: str, page_text: str, cfg: VerificationConfig,
+                 templates: dict[str, str]) -> tuple[dict[int, dict], str, str]:
+    """({position within chunk: verdict item}, model used, failure reason)."""
+    reply, used = client.complete_any(
+        model, build_prompt(page_id, page_text, chunk, templates))
+    payload = extract_json(reply)
     if payload is None:
-        # Still record which model produced the unusable reply: a fallback
-        # that reliably cannot emit JSON should be visible in the corpus
-        # rather than hidden behind an anonymous "unchecked".
-        return [Verdict(UNCHECKED, s, None, None, "verifier reply did not parse", used)
-                for s in spans]
+        # Record which model produced the unusable reply: a fallback that
+        # reliably cannot emit JSON should be visible in the corpus rather
+        # than hidden behind an anonymous "unchecked".
+        return {}, used, "verifier reply did not parse"
 
     by_index: dict[int, dict] = {}
     for item in payload.get("verdicts", []):
@@ -151,13 +128,74 @@ def verify(client: Client, model: ModelConfig, pairs: list[RawPair],
                 by_index[int(item.get("index", -1))] = item
             except (TypeError, ValueError):
                 continue
+    return by_index, used, ""
+
+
+def verify(client: Client, model: ModelConfig, pairs: list[RawPair],
+           page_id: str, page_text: str, cfg: VerificationConfig,
+           templates: dict[str, str]) -> list[Verdict]:
+    """A verdict per pair, in the order given.
+
+    The pairs are judged in chunks. A large page asked for forty pairs is a
+    prompt of the whole page plus forty items to rule on, and the free
+    endpoints silently fail to answer at that size: every row from the four
+    biggest pages of a trial run came back unchecked while every small page
+    was judged. Chunking spends more requests on exactly the pages whose
+    rows are worth the most.
+
+    Never raises on a judge failure, with one exception. A spent allowance
+    propagates, because marking the rows unchecked and returning would let
+    the caller walk to the next page and spend the whole fallback chain again
+    on an allowance that is already gone. If some chunks were judged before
+    that happened, their verdicts are kept and the run stops at the next
+    page's generate call instead.
+    """
+    spans = [span_ok(p.support, p.page.text or page_text, cfg) for p in pairs]
+
+    if not cfg.enabled:
+        return [Verdict(UNCHECKED, s, None, None, "verification disabled") for s in spans]
+
+    size = max(1, cfg.max_pairs_per_request)
+    items: dict[int, dict] = {}
+    reasons: dict[int, str] = {}
+    used = ""
+    judged_any = False
+
+    for start in range(0, len(pairs), size):
+        chunk = pairs[start:start + size]
+        try:
+            found, used_now, reason = _judge_chunk(
+                client, model, chunk, page_id, page_text, cfg, templates)
+        except QuotaExhausted:
+            if not judged_any:
+                raise
+            for n in range(start, len(pairs)):
+                reasons[n] = "daily allowance spent before this chunk was judged"
+            break
+        except Exception as exc:   # noqa: BLE001 - a judge failing must not stop the run
+            for n in range(start, min(start + size, len(pairs))):
+                reasons[n] = f"verifier unavailable: {type(exc).__name__}"
+            continue
+
+        used = used_now or used
+        if reason:
+            for n in range(start, start + len(chunk)):
+                reasons[n] = reason
+            continue
+
+        judged_any = True
+        # Indices are relative to the chunk the judge was shown, so they are
+        # offset back onto the page's own numbering before being merged.
+        for local, item in found.items():
+            if 0 <= local < len(chunk):
+                items[start + local] = item
 
     out: list[Verdict] = []
     for i, span in enumerate(spans):
-        item = by_index.get(i)
+        item = items.get(i)
         if item is None:
             out.append(Verdict(UNCHECKED, span, None, None,
-                               "verifier returned no verdict", used))
+                               reasons.get(i, "verifier returned no verdict"), used))
             continue
         answer_ok = bool(item.get("answer_supported", False))
         # An empty derivation has nothing to check, so it cannot fail.
