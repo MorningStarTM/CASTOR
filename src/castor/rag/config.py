@@ -119,6 +119,10 @@ class VerificationConfig:
     # forty items to rule on is a prompt the free endpoints do not answer, so
     # the rows from the richest pages all came back unchecked.
     max_pairs_per_request: int = 10
+    # Ceiling on the reference text shown to the judge. Only the definitions a
+    # chunk's pairs quote or name are sent at all; this bounds the result when
+    # a chunk touches many of them.
+    max_reference_chars: int = 4_000
 
 
 @dataclass

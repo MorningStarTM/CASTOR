@@ -127,6 +127,11 @@ verification:
   # items to rule on is more than a :free endpoint will answer. Smaller
   # requests cost more of them, on exactly the pages worth the most.
   max_pairs_per_request: 10
+  # The judge is shown only the referenced definitions its chunk of pairs
+  # quotes or names, capped here. Sending the whole reference block made the
+  # verify prompt 37.7k characters on the largest pages - bigger than the 32k
+  # prompt that previously failed to be answered at all.
+  max_reference_chars: 4000
 
 dedup:
   enabled: true

@@ -33,6 +33,16 @@ EXECUTED = "executed"
 EXTRACTIVE = "extractive"
 GENERATIVE = "generative"
 
+# Which part of the evidence a quoted span was found in. The generator is
+# shown a page and the definitions of the symbols that page refers to, and is
+# told an answer may rest on either, so these are both valid groundings and
+# need telling apart: a reference-grounded row additionally depends on the
+# retrieval layer having resolved the right symbol.
+SPAN_PAGE = "page"
+SPAN_REFERENCE = "reference"
+SPAN_EXECUTED = "executed"      # grounded by running the simulator, not by text
+SPAN_NONE = ""                  # not found, or nothing to look for
+
 # Source
 API = "grid2op.api"
 DOCS = "grid2op.docs"
@@ -93,6 +103,17 @@ class QARow:
     source: str
     model: str
     verifier: str
+    # Which part of the evidence the quoted span was found in: "page",
+    # "reference", or "" when it was not found at all. Defaulted so rows
+    # written before this field existed still load.
+    #
+    # The generator is shown the page and the definitions of the symbols it
+    # refers to, and is told an answer may rest on either, so a span quoting
+    # a definition is correct. Recording which it was keeps that distinction
+    # in the corpus: a row grounded in a reference depends on the retrieval
+    # layer having resolved the right symbol, which is a different claim from
+    # a row grounded in the page it names.
+    span_source: str = ""
 
     @staticmethod
     def new_checks() -> dict[str, bool | None]:

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any, Iterator
 
-from .schema import EXEC, EXECUTED, PASS, QARow
+from .schema import EXEC, EXECUTED, PASS, QARow, SPAN_EXECUTED
 
 _COUNTS = [
     ("power lines", "n_line"),
@@ -57,6 +57,10 @@ def _row(number: int, question: str, answer: str, page: str,
         source=EXEC,
         model="",
         verifier="",
+        # No span to look for: these rows are grounded by running the
+        # simulator, which is a stronger claim than quoting a document. Left
+        # empty they would be indistinguishable from a span not found.
+        span_source=SPAN_EXECUTED,
     )
 
 

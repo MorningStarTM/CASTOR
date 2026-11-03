@@ -86,6 +86,7 @@ def _to_row(number: int, raw: generate_stage.RawPair, verdict: verify_stage.Verd
     checks["span"] = verdict.span
     checks["entailment"] = verdict.entailment
     checks["reasoning"] = verdict.reasoning
+    span_source = verdict.span_source
     return QARow(
         id=make_id(number),
         question=raw.question,
@@ -103,6 +104,7 @@ def _to_row(number: int, raw: generate_stage.RawPair, verdict: verify_stage.Verd
         model=generator_id,
         # The model that actually judged, which may be a fallback.
         verifier=verdict.model or (verifier_id if verdict.verdict != UNCHECKED else ""),
+        span_source=span_source,
     )
 
 
@@ -181,16 +183,17 @@ def run(cfg: RagConfig, templates: dict[str, str], limit: int | None = None,
         try:
             verdicts = verify_stage.verify(
                 client, cfg.models.verifier, result.pairs,
-                head.page.id, head.page.text, cfg.verification, templates)
+                head.page.id, head.page.text, cfg.verification, templates,
+                head.references)
         except QuotaExhausted as exc:
             spent = str(exc)
-            verdicts = [
-                verify_stage.Verdict(
-                    UNCHECKED,
-                    verify_stage.span_ok(p.support, head.page.text, cfg.verification),
-                    None, None, "daily allowance spent before verification")
-                for p in result.pairs
-            ]
+            verdicts = []
+            for p in result.pairs:
+                ok, source = verify_stage.span_match(
+                    p.support, head.page.text, head.references, cfg.verification)
+                verdicts.append(verify_stage.Verdict(
+                    UNCHECKED, ok, None, None,
+                    "daily allowance spent before verification", "", source))
 
         rows = [
             _to_row(number + n, raw, verdict, refs,
@@ -298,7 +301,14 @@ def reverify(cfg: RagConfig, templates: dict[str, str], limit: int | None = None
         by_page.setdefault(row.page, []).append(row)
     report(f"{len(stale):,} unchecked rows across {len(by_page):,} pages")
 
+    # Pagination and retrieval are both deterministic, so rebuilding them here
+    # reproduces exactly the evidence the generator was shown. Re-judging a
+    # row against the page alone, when its span legitimately quotes one of the
+    # definitions supplied alongside, is what made reference-grounded rows
+    # fail the moment they were looked at twice.
     pages = {p.id: p for p in pages_stage.build(cfg.pages, cfg.source)}
+    root = pages_stage.locate_package(cfg.source.package)
+    symbol_index = index_stage.build(cfg.index, cfg.source, root)
     client = Client(cfg.api)
     index = {r.id: r for r in rows}
     targets = list(by_page.items())[:limit] if limit else list(by_page.items())
@@ -318,8 +328,11 @@ def reverify(cfg: RagConfig, templates: dict[str, str], limit: int | None = None
             support=r.support, grounding=r.grounding,
             reasoning_depth=r.reasoning_depth, page=page) for r in page_rows]
 
+        item = augment_stage.augment(page, symbol_index, cfg.augment, templates,
+                                     cfg.index.bare_fallback_for_qualified)
         verdicts = verify_stage.verify(client, cfg.models.verifier, pairs,
-                                       page.id, page.text, cfg.verification, templates)
+                                       page.id, page.text, cfg.verification,
+                                       templates, item.references)
         for row, verdict in zip(page_rows, verdicts):
             if verdict.verdict == UNCHECKED:
                 continue
@@ -328,6 +341,7 @@ def reverify(cfg: RagConfig, templates: dict[str, str], limit: int | None = None
                           "reasoning": verdict.reasoning, "execution": None}
             row.reason = verdict.reason
             row.verifier = verdict.model or cfg.models.verifier.id
+            row.span_source = verdict.span_source
             index[row.id] = row
             recovered += 1
 
