@@ -78,38 +78,109 @@ the output is a labelled dataset rather than an answer to a user.
 The corpus doubles as the groundwork for RLAIF. See
 [Why this is RLAIF groundwork](#why-this-is-rlaif-groundwork).
 
-## Why retrieval at all, and why not embeddings
+## Architecture
 
-A grid2op docstring is written for a reader who can follow a link:
+### The idea in one breath
+
+grid2op ships with notes its developers wrote for each other. We turn those
+notes into an **exam paper**: thousands of questions, each with an answer, and
+each answer carrying a quote from the notes that proves it. Then a second,
+different model marks the paper. Questions that fail the marking stay in, with
+their mark attached, so the dataset admits its own error rate.
+
+The student model studies the exam paper. That is how it learns grid2op.
+
+### The seven steps
+
+```mermaid
+flowchart TB
+    IN["<b>grid2op's own manual</b><br/>489 files of notes developers<br/>wrote for each other"]
+
+    S1["<b>Step 1 - Cut it into pages</b><br/>one page per topic<br/>212 pages"]
+
+    S2["<b>Step 2 - Build a glossary</b><br/>every technical word in grid2op,<br/>paired with its explanation<br/>955 entries"]
+
+    S3["<b>Step 3 - Staple the glossary on</b><br/>a page says 'see Backend' but never<br/>says what a Backend is, so we attach<br/>the glossary entry to that page"]
+
+    S4["<b>Step 4 - A teacher writes the exam</b><br/>reads one page, writes up to 25<br/>questions and answers, and must quote<br/>the page as proof for each answer"]
+
+    S5["<b>Step 5 - An examiner marks it</b><br/>a DIFFERENT model checks: is the quote<br/>really there? does the answer follow<br/>from it? does the working make sense?"]
+
+    S6["<b>Step 6 - Remove repeats</b><br/>two questions asking the same thing<br/>teach nothing twice"]
+
+    S7["<b>Step 7 - Check for cheating</b><br/>no question may mention the grids<br/>we saved for the final test"]
+
+    OUT["<b>Finished question bank</b><br/>every answer traceable to the<br/>line of the manual that proves it"]
+
+    IN --> S1 --> S2 --> S3 --> S4 --> S5 --> S6 --> S7 --> OUT
+
+    style S4 fill:#fde8d7,stroke:#c2410c
+    style S5 fill:#fde8d7,stroke:#c2410c
+    style OUT fill:#dcf2e3,stroke:#15803d
+```
+
+**Only the two shaded steps cost anything.** Steps 4 and 5 call a language
+model over the internet and are rate-limited. Everything else is ordinary code
+reading files on disk, so it can be re-run and debugged for free, as often as
+needed. That split is the main design decision in the whole pipeline.
+
+### One page, start to finish
+
+The same thing again, as a real example rather than a description.
+
+**What goes in** — one page, exactly as grid2op's developers wrote it:
 
     ActionSpace should be created by an :class:`grid2op.Environment.Environment`
     with its parameters coming from a properly set up
     :class:`grid2op.Backend.Backend`
 
-Hand that to a teacher model on its own and it will invent what `Backend`
-does, confidently and plausibly. 1,653 such cross-references appear across
-170 of 212 pages — roughly 60% of docstrings, 2.4 references each. Without
-resolution, the majority of pages are being read with their nouns missing.
+Notice the problem. The page refers to `Environment` and `Backend` and never
+says what either one is. A teacher given only this will invent them — fluently,
+and wrongly.
 
-The retrieval is a **symbol index**: a table from a qualified name to its
-docstring, built once by walking the AST. No embeddings, no vector store, no
-chunk overlap.
+**What Step 3 attaches**, pulled from the glossary built in Step 2:
 
-The reason is that a cross-reference is an **exact name**. `BaseObservation.simulate`
-means that method on that class and nothing else. Similarity search answers
-"what text resembles this string", which is the wrong question and fails in
-the specific way that matters: `Environment.step`, `BaseAction.step` and
-`Backend.step` all look alike to an embedding, and handing the teacher the
-wrong `step` produces a confident definition for a different object. Missing
-beats guessing, so an ambiguous lowercase name resolves to nothing rather than
-to its first match (`index.bare_fallback_for_qualified: false`).
+    --- Environment ---
+    This class is the grid2op implementation of the "Environment" entity in
+    the RL framework.
+    Attributes
+      name: str
+          The name of the environment
+      action_space: grid2op.Action.ActionSpace
+          Another name for Environment.helper_action_player for gymnasium
+          compatibility.
+      ...
 
-Measured ambiguity in grid2op: class names are 282 distinct with 3 ambiguous
-(1.1%); method names are 545 distinct with 112 ambiguous (20.6%) — `reset`
-alone is defined on 24 classes. Hence the rule: a CapWords name may fall back
-to a bare lookup, a lowercase one may not.
+    --- Backend ---
+    INTERNAL  Unless you want to code a backend yourself, it is not
+    recommended to alter this or use it directly in any way.
+    ...
 
-## Architecture
+**What comes out** — one row of the dataset:
+
+    Question   What is the relationship between Environment and ActionSpace?
+    Working    Environment creates ActionSpace and exposes it as the
+               action_space attribute.
+    Answer     The Environment creates the ActionSpace and exposes it as the
+               action_space attribute for gymnasium compatibility.
+    Proof      "action_space: grid2op.Action.ActionSpace
+                    Another name for Environment.helper_action_player for
+                    gymnasium compatibility."
+    Mark       pass - the quote was found, and the answer follows from it
+    Came from  the glossary entry, not the page itself
+
+Look back at the glossary excerpt above and you can find that proof quote
+inside the `Environment` entry, word for word. That is the whole mechanism in
+one glance: the page alone could not have answered the question, the glossary
+supplied the missing sentence, and the answer points at the exact line that
+backs it.
+
+Which is why the dataset also records *where* the proof came from. This one
+rests on the attached glossary rather than on the page, and that is a weaker
+guarantee: it depends on Step 2 having looked up the right word. An answer
+quoting the page in front of it depends on nothing else.
+
+### For engineers
 
 ```mermaid
 flowchart TB
@@ -145,13 +216,44 @@ flowchart TB
     S7 --> OUT["<b>grid2op_qa.jsonl</b><br/>plus pages.jsonl<br/>uploaded to Hugging Face"]
 ```
 
-Every stage before 4 and after 5 is deterministic and free. That is deliberate:
-the expensive, rate-limited part is two stages wide, and everything else can be
-re-run, measured and debugged without spending a request.
+Stage 0 is a separate source: rows generated against a live grid2op
+environment, where the answer is a measured array shape rather than a claim.
+No model and no API key, and they join the corpus at the dedup stage.
 
 The run is resumable. Rows append per request with an `fsync`, and a restart
 skips any page already recorded in `pages.jsonl`, so a dropped session or an
 exhausted daily allowance costs one request rather than the run.
+
+## Why retrieval at all, and why not embeddings
+
+A grid2op docstring is written for a reader who can follow a link:
+
+    ActionSpace should be created by an :class:`grid2op.Environment.Environment`
+    with its parameters coming from a properly set up
+    :class:`grid2op.Backend.Backend`
+
+Hand that to a teacher model on its own and it will invent what `Backend`
+does, confidently and plausibly. 1,653 such cross-references appear across
+170 of 212 pages — roughly 60% of docstrings, 2.4 references each. Without
+resolution, the majority of pages are being read with their nouns missing.
+
+The retrieval is a **symbol index**: a table from a qualified name to its
+docstring, built once by walking the AST. No embeddings, no vector store, no
+chunk overlap.
+
+The reason is that a cross-reference is an **exact name**. `BaseObservation.simulate`
+means that method on that class and nothing else. Similarity search answers
+"what text resembles this string", which is the wrong question and fails in
+the specific way that matters: `Environment.step`, `BaseAction.step` and
+`Backend.step` all look alike to an embedding, and handing the teacher the
+wrong `step` produces a confident definition for a different object. Missing
+beats guessing, so an ambiguous lowercase name resolves to nothing rather than
+to its first match (`index.bare_fallback_for_qualified: false`).
+
+Measured ambiguity in grid2op: class names are 282 distinct with 3 ambiguous
+(1.1%); method names are 545 distinct with 112 ambiguous (20.6%) — `reset`
+alone is defined on 24 classes. Hence the rule: a CapWords name may fall back
+to a bare lookup, a lowercase one may not.
 
 ## How the data is chunked
 
